@@ -1,34 +1,37 @@
-use std::fs::File;
-use orc_rust::ArrowReaderBuilder;
+use dotenvy::dotenv;
+use flexi_logger::{Cleanup, Criterion, Duplicate, Logger, Naming};
+use log::LevelFilter;
+use std::env;
 
 fn main() {
-    let file = File::open("/Users/raps/Documents/02_Work/dataset.nosync/2025-05-18-popular-1k/orc/revision/20250903_232723_00127_avcv4_f35f0e81-0717-4e62-8157-100a583322a1").unwrap();
-    let reader = ArrowReaderBuilder::try_new(file).unwrap().build();
-    let record_batches = reader.collect::<Result<Vec<_>, _>>().unwrap();
-    for record in record_batches{
-        let Some(generic_ids) = record.column(0).as_any().downcast_ref::<arrow::array::StringArray>() else{ break };
-        let ids = generic_ids.iter().collect::<Vec<Option<&str>>>();
-        let Some(generic_messages) = record.column(1).as_any().downcast_ref::<arrow::array::BinaryArray>() else{ break };
-        let messages = generic_messages.iter().collect::<Vec<Option<&[u8]>>>();
-        let _authors = record.column(2);
-        for row in 0..record.column(0).len(){
-            let Some(elem) = ids.get(row) else{continue};
-            let Some(id) = *elem else { continue };
-            println!("commit id: {}", id);
-            let Some(elem) = messages.get(row) else{continue};
-            let Some(bytes) = *elem else{continue};
-            let Ok(msg) = String::from_utf8(bytes.to_vec()) else {continue};
-            println!("commit msg: {}", msg);
-            break;
-        }
-        break;
-    }
+    dotenv().ok();
+    let dir_orc = env::var("ORC_PATH").expect("ORC_PATH not set");
+    Logger::with(LevelFilter::Info)
+        .log_to_file(
+            flexi_logger::FileSpec::default()
+                // .directory("/infres/ir800/rapaport/results/FULL_new/logs")
+                // .basename("FULL-all")
+                .directory(format!("logs"))
+                .basename("anomaly")
+                .suffix("log"),
+        )
+        .rotate(
+            Criterion::Size(10_000_000), // Rotate when the file exceeds 10 MB
+            Naming::Numbers,             // Use numbers for rotated files
+            Cleanup::KeepLogFiles(5),    // Keep at most 5 log files
+        )
+        .duplicate_to_stderr(Duplicate::Warn) // Duplicate logs to stderr
+        .start()
+        .unwrap();
+
+    anomalous_commits::extract_author_commits(dir_orc);
 }
+
 // 13 columns
 // id ok
 // msg ok
 // author ok
-// date ok 
+// date ok
 // tz ok
 // ??
 // committer ok
