@@ -3,65 +3,63 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
 use orc_rust::ArrowReaderBuilder;
 use rayon::prelude::*;
+use rocksdb::{DB, Options};
 use std::{
     fs::File,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-/// Flush Authors data to a CSV file
-/// 
-/// # Arguments
-/// * `authors` - Reference to the Authors (CHashMap) containing author information
-/// * `output_path` - Path where the CSV file will be written
-/// 
-/// # Returns
-/// Result indicating success or CSV writing error
-pub fn flush_authors_to_csv(authors: &env::Authors, output_path: &str) -> Result<(), csv::Error> {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    
-    let mut wtr = csv::Writer::from_path(output_path)?;
-    
-    // Write CSV header
-    wtr.write_record(&[
-        "author_id",
-        "number_of_commits",
-        "time_since_first_commit_ns",
-        "commits_list"
-    ])?;
-    
-    // Collect all author data using a temporary vector wrapped in RefCell
-    let data_collector = Rc::new(RefCell::new(Vec::new()));
-    
-    {
-        let collector = data_collector.clone();
-        authors.retain(|author_id, author_info| {
-            collector.borrow_mut().push((
-                author_id.clone(),
-                author_info.clone(),
-            ));
-            true // Keep all entries
-        });
+pub fn flush_to_rocksdb(authors: env::Authors, committers: env::Committers, db_path: &str) -> Result<(), rocksdb::Error> {
+    // Delete the database if it exists to start fresh
+    if std::path::Path::new(db_path).exists() {
+        DB::destroy(&Options::default(), db_path)?;
     }
-    
-    // Write all records
-    for (author_id, author_info) in data_collector.borrow().iter() {
-        // Format commits as a semicolon-separated list: "commit_id:timestamp:tz;commit_id:timestamp:tz;..."
-        let commits_str = author_info.commits
-            .iter()
-            .map(|(id, date, tz)| format!("{}:{}:{}", id, date, tz))
-            .collect::<Vec<_>>()
-            .join(";");
+
+    // Open/create RocksDB database
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+    let db = DB::open(&opts, db_path)?;
+
+    for (author_id, author_info) in authors.into_iter() {
+        let person_record = env::PersonRecord {
+            person_type: env::PersonType::Author,
+            nom: author_info.nom,
+            email: author_info.email,
+            number_of_commits: author_info.number_of_commits,
+            number_of_self_commits: author_info.number_of_self_commits,
+            time_since_first_commit: author_info.time_since_first_commit,
+            commits: author_info.commits,
+        };
         
-        wtr.write_record(&[
-            author_id.as_str(),
-            author_info.number_of_commits.to_string().as_str(),
-            author_info.time_since_first_commit.to_string().as_str(),
-            commits_str.as_str(),
-        ])?;
+        let value = serde_json::to_vec(&person_record)
+            .expect("Failed to serialize author info");
+        
+        // Store in RocksDB with "author:<author_id>" as key
+        let key = format!("author:{}", author_id);
+        db.put(key.as_bytes(), value)?;
     }
-    
-    wtr.flush()?;
+    // authors is now dropped and memory freed
+
+    for (committer_id, committer_info) in committers.into_iter() {
+        let person_record = env::PersonRecord {
+            person_type: env::PersonType::Committer,
+            nom: committer_info.nom,
+            email: committer_info.email,
+            number_of_commits: committer_info.number_of_commits,
+            number_of_self_commits: committer_info.number_of_self_commits,
+            time_since_first_commit: committer_info.time_since_first_commit,
+            commits: committer_info.commits,
+        };
+
+        let value = serde_json::to_vec(&person_record)
+            .expect("Failed to serialize committer info");
+        
+        // Store in RocksDB with "committer:<committer_id>" as key
+        let key = format!("committer:{}", committer_id);
+        db.put(key.as_bytes(), value)?;
+    }
+
+    db.flush()?;
     Ok(())
 }
 
@@ -70,14 +68,33 @@ pub fn extract_author_commits(dir_orc: String) {
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    let error_metadata_not_readable = AtomicUsize::new(0);
+    
+    // Error counters for column-level failures
+    let error_commit_ids = AtomicUsize::new(0);
+    let error_author_ids = AtomicUsize::new(0);
+    let error_author_dates = AtomicUsize::new(0);
+    let error_author_timezones = AtomicUsize::new(0);
+    let error_committer_ids = AtomicUsize::new(0);
+    let error_committer_dates = AtomicUsize::new(0);
+    let error_committer_timezones = AtomicUsize::new(0);
+    
+    // Error counters for row-level missing data
+    let error_missing_commit_id = AtomicUsize::new(0);
+    let error_missing_author_id = AtomicUsize::new(0);
+    let error_missing_author_date = AtomicUsize::new(0);
+    let error_missing_author_tz = AtomicUsize::new(0);
+    let error_missing_committer_id = AtomicUsize::new(0);
+    let error_missing_committer_date = AtomicUsize::new(0);
+    let error_missing_committer_tz = AtomicUsize::new(0);
+    
     let all_authors = env::Authors::new();
+    let all_committers = env::Committers::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos() as i64;
     let bar = ProgressBar::new(files.len() as u64);
-        bar.set_style(
+    bar.set_style(
         ProgressStyle::with_template(
             "{msg} {wide_bar} {pos} {percent_precise}% {elapsed_precise} {eta}",
         )
@@ -107,7 +124,7 @@ pub fn extract_author_commits(dir_orc: String) {
                 .downcast_ref::<arrow::array::StringArray>()
                 .map(|col| col.iter().collect::<Vec<Option<&str>>>())
             else {
-                error_metadata_not_readable.fetch_add(1, Ordering::Relaxed);
+                error_commit_ids.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
             // Author id
@@ -117,7 +134,7 @@ pub fn extract_author_commits(dir_orc: String) {
                 .downcast_ref::<arrow::array::BinaryArray>()
                 .map(|col| col.iter().collect::<Vec<Option<&[u8]>>>())
             else {
-                error_metadata_not_readable.fetch_add(1, Ordering::Relaxed);
+                error_author_ids.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
             // Author Date
@@ -127,7 +144,7 @@ pub fn extract_author_commits(dir_orc: String) {
                 .downcast_ref::<arrow::array::TimestampNanosecondArray>()
                 .map(|col| col.iter().collect::<Vec<Option<i64>>>())
             else {
-                error_metadata_not_readable.fetch_add(1, Ordering::Relaxed);
+                error_author_dates.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
             // Author Timezone
@@ -137,7 +154,7 @@ pub fn extract_author_commits(dir_orc: String) {
                 .downcast_ref::<arrow::array::Int16Array>()
                 .map(|col| col.iter().collect::<Vec<Option<i16>>>())
             else {
-                error_metadata_not_readable.fetch_add(1, Ordering::Relaxed);
+                error_author_timezones.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
             // Committer id
@@ -147,7 +164,7 @@ pub fn extract_author_commits(dir_orc: String) {
                 .downcast_ref::<arrow::array::BinaryArray>()
                 .map(|col| col.iter().collect::<Vec<Option<&[u8]>>>())
             else {
-                error_metadata_not_readable.fetch_add(1, Ordering::Relaxed);
+                error_committer_ids.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
             // Committer date
@@ -157,7 +174,7 @@ pub fn extract_author_commits(dir_orc: String) {
                 .downcast_ref::<arrow::array::TimestampNanosecondArray>()
                 .map(|col| col.iter().collect::<Vec<Option<i64>>>())
             else {
-                error_metadata_not_readable.fetch_add(1, Ordering::Relaxed);
+                error_committer_dates.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
             // Committer Timezone
@@ -167,21 +184,13 @@ pub fn extract_author_commits(dir_orc: String) {
                 .downcast_ref::<arrow::array::Int16Array>()
                 .map(|col| col.iter().collect::<Vec<Option<i16>>>())
             else {
-                error_metadata_not_readable.fetch_add(1, Ordering::Relaxed);
+                error_committer_timezones.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
-            // Commit visit type
-            // let Some(visits) = record
-            //     .column(11)
-            //     .as_any()
-            //     .downcast_ref::<arrow::array::StringArray>()
-            //     .map(|col| col.iter().collect::<Vec<Option<&str>>>())
-            // else {
-            //     error_metadata_not_readable.fetch_add(1, Ordering::Relaxed);
-            //     continue;
-            // };
+
             for row in 0..record.column(0).len() {
                 let Some(id) = ids.get(row).and_then(|elem| *elem) else {
+                    error_missing_commit_id.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
                 let Some(author) = authors.get(row).and_then(|elem| *elem).map(|bytes| {
@@ -190,20 +199,43 @@ pub fn extract_author_commits(dir_orc: String) {
                         .map(|b| format!("{:02x}", b))
                         .collect::<String>()
                 }) else {
+                    error_missing_author_id.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
                 let Some(date) = dates.get(row).and_then(|elem| *elem) else {
+                    error_missing_author_date.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
                 let Some(tz) = tzs.get(row).and_then(|elem| *elem) else {
+                    error_missing_author_tz.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
+                let Some(committer) = committers.get(row).and_then(|elem| *elem).map(|bytes| {
+                    bytes
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>()
+                }) else {
+                    error_missing_committer_id.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                let Some(cdate) = cdates.get(row).and_then(|elem| *elem) else {
+                    error_missing_committer_date.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                let Some(ctz) = ctzs.get(row).and_then(|elem| *elem) else {
+                    error_missing_committer_tz.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                let self_committed = committer == author;
+
                 all_authors.upsert(
                     author.clone(),
                     || env::AuthorInfo {
                         nom: None,
                         email: None,
                         number_of_commits: 1,
+                        number_of_self_commits: if self_committed { 1 } else { 0 },
                         time_since_first_commit: (now - date),
                         commits: vec![(id.to_owned(), date, tz)],
                     },
@@ -211,41 +243,81 @@ pub fn extract_author_commits(dir_orc: String) {
                         author_info.time_since_first_commit =
                             author_info.time_since_first_commit.max(now - date);
                         author_info.number_of_commits = author_info.number_of_commits + 1;
+                        if self_committed{
+                            author_info.number_of_self_commits = author_info.number_of_self_commits + 1;
+                        }
                         author_info.commits.push((id.to_owned(), date, tz));
                     },
                 );
-                let Some(committer) = committers.get(row).and_then(|elem| *elem).map(|bytes| {
-                    bytes
-                        .iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect::<String>()
-                }) else {
-                    continue;
-                };
-                if committer != author {
-                    let Some(cdate) = cdates.get(row).and_then(|elem| *elem) else {
-                        continue;
-                    };
-                    let Some(ctz) = ctzs.get(row).and_then(|elem| *elem) else {
-                        continue;
-                    };
-                    all_authors.upsert(committer, ||env::AuthorInfo{
+
+                all_committers.upsert(
+                    committer,
+                    || env::CommitterInfo {
                         nom: None,
                         email: None,
                         number_of_commits: 1,
+                        number_of_self_commits: if self_committed { 1 } else { 0 },
                         time_since_first_commit: (now - cdate),
                         commits: vec![(id.to_owned(), cdate, ctz)],
-                    }, |author_info|{
-                        author_info.time_since_first_commit = author_info.time_since_first_commit.max(now-cdate);
-                        author_info.number_of_commits = author_info.number_of_commits + 1;
-                        author_info.commits.push((id.to_owned(), cdate, ctz));
-                    });
-                }
+                    },
+                    |committer_info| {
+                        committer_info.time_since_first_commit =
+                            committer_info.time_since_first_commit.max(now - cdate);
+                        committer_info.number_of_commits = committer_info.number_of_commits + 1;
+                        if self_committed{
+                            committer_info.number_of_self_commits = committer_info.number_of_self_commits + 1;
+                        }
+                        committer_info.commits.push((id.to_owned(), cdate, ctz));
+                    },
+                );
             }
         }
         bar.inc(1);
     });
     bar.finish();
-    flush_authors_to_csv(&all_authors, "results/authors.csv").unwrap();
-    todo!("print amount of errors and add error count in the row loop");
+    
+    // Display error statistics
+    println!("\n========== Error Report ==========");
+    println!("Column-level errors (entire column failed to read):");
+    println!("  - Commit IDs:           {}", error_commit_ids.load(Ordering::Relaxed));
+    println!("  - Author IDs:           {}", error_author_ids.load(Ordering::Relaxed));
+    println!("  - Author Dates:         {}", error_author_dates.load(Ordering::Relaxed));
+    println!("  - Author Timezones:     {}", error_author_timezones.load(Ordering::Relaxed));
+    println!("  - Committer IDs:        {}", error_committer_ids.load(Ordering::Relaxed));
+    println!("  - Committer Dates:      {}", error_committer_dates.load(Ordering::Relaxed));
+    println!("  - Committer Timezones:  {}", error_committer_timezones.load(Ordering::Relaxed));
+    
+    let total_column_errors = error_commit_ids.load(Ordering::Relaxed)
+        + error_author_ids.load(Ordering::Relaxed)
+        + error_author_dates.load(Ordering::Relaxed)
+        + error_author_timezones.load(Ordering::Relaxed)
+        + error_committer_ids.load(Ordering::Relaxed)
+        + error_committer_dates.load(Ordering::Relaxed)
+        + error_committer_timezones.load(Ordering::Relaxed);
+    
+    println!("\nRow-level errors (missing data in specific rows):");
+    println!("  - Missing Commit ID:       {}", error_missing_commit_id.load(Ordering::Relaxed));
+    println!("  - Missing Author ID:       {}", error_missing_author_id.load(Ordering::Relaxed));
+    println!("  - Missing Author Date:     {}", error_missing_author_date.load(Ordering::Relaxed));
+    println!("  - Missing Author TZ:       {}", error_missing_author_tz.load(Ordering::Relaxed));
+    println!("  - Missing Committer ID:    {}", error_missing_committer_id.load(Ordering::Relaxed));
+    println!("  - Missing Committer Date:  {}", error_missing_committer_date.load(Ordering::Relaxed));
+    println!("  - Missing Committer TZ:    {}", error_missing_committer_tz.load(Ordering::Relaxed));
+    
+    let total_row_errors = error_missing_commit_id.load(Ordering::Relaxed)
+        + error_missing_author_id.load(Ordering::Relaxed)
+        + error_missing_author_date.load(Ordering::Relaxed)
+        + error_missing_author_tz.load(Ordering::Relaxed)
+        + error_missing_committer_id.load(Ordering::Relaxed)
+        + error_missing_committer_date.load(Ordering::Relaxed)
+        + error_missing_committer_tz.load(Ordering::Relaxed);
+    
+    println!("\nTotal Errors:");
+    println!("  - Column-level: {}", total_column_errors);
+    println!("  - Row-level:    {}", total_row_errors);
+    println!("  - Grand Total:  {}", total_column_errors + total_row_errors);
+    println!("==================================\n");
+    
+    // Transfer ownership to flush_to_rocksdb - data will be consumed and freed
+    flush_to_rocksdb(all_authors, all_committers, "results/persons.db").unwrap();
 }
