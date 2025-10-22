@@ -44,6 +44,7 @@ dependencies = [
 name = "anomalous-commits"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arrow",
  "chashmap",
  "chrono",
