@@ -1,4 +1,6 @@
 pub mod env;
+pub mod time_of_day;
+
 use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
 use orc_rust::ArrowReaderBuilder;
@@ -38,7 +40,6 @@ pub fn flush_to_rocksdb(authors: env::Authors, committers: env::Committers, db_p
         let key = format!("author:{}", author_id);
         db.put(key.as_bytes(), value)?;
     }
-    // authors is now dropped and memory freed
 
     for (committer_id, committer_info) in committers.into_iter() {
         let person_record = env::PersonRecord {
