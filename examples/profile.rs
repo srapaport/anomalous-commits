@@ -29,7 +29,9 @@ fn main() {
     //println!("\nDistribution:\n{:?}", distrib);
 
     // Plot the distribution
+    #[cfg(feature = "plotting")]
     let plot_filename = format!("results/tod_profile_{}.png", person.0.replace("/", "_"));
+    #[cfg(feature = "plotting")]
     match tod.plot_distribution(
         &plot_filename,
         &format!("Commit Time Distribution - {}", person.0),
