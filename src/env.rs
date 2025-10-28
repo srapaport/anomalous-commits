@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chashmap::CHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -6,7 +8,7 @@ pub struct AuthorInfo {
     pub nom: Option<String>,
     pub email: Option<String>,
     pub number_of_commits: usize,
-    pub number_of_self_commits: usize,// (author == committer)
+    pub number_of_self_commits: usize, // (author == committer)
     pub time_since_first_commit: i64,
     pub commits: Vec<(String, i64, i16)>,
 }
@@ -16,7 +18,7 @@ pub struct CommitterInfo {
     pub nom: Option<String>,
     pub email: Option<String>,
     pub number_of_commits: usize,
-    pub number_of_self_commits: usize,// (author == committer)
+    pub number_of_self_commits: usize, // (author == committer)
     pub time_since_first_commit: i64,
     pub commits: Vec<(String, i64, i16)>,
 }
@@ -43,18 +45,17 @@ pub struct PersonRecord {
 
 pub type Authors = CHashMap<String, AuthorInfo>;
 pub type Committers = CHashMap<String, CommitterInfo>;
+pub type Contributors = HashMap<String, PersonRecord>; // key: "author:hash_hexa" or "committer:hash_hexa"
 
-// 13 columns
-// id ok
-// msg ok
-// author ok
-// date ok
-// tz ok
-// ??
-// committer ok
-// cdate ok
-// ctz ok
-// ??
-// directory ok
-// visit type ok
-// ??
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RepositoryStats {
+    files_added: usize,
+    files_removed: usize,
+    files_modified: usize,
+    files_renamed: usize,
+    unique_file_type_interaction: HashMap<String, usize>, // Counter <.extension, #interactions>
+    
+    contributors: Contributors,
+    commit_time: Vec<u64>,
+    time_between_commit: Vec<usize>,
+}

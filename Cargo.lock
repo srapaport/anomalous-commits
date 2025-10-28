@@ -79,6 +79,7 @@ dependencies = [
  "flexi_logger",
  "indicatif",
  "log",
+ "num_cpus",
  "orc-rust",
  "plotters",
  "rayon",

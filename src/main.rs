@@ -5,7 +5,7 @@ use std::env;
 
 fn main() {
     dotenv().ok();
-    let dir_orc = env::var("ORC_PATH").expect("ORC_PATH not set");
+    let dir_orc = env::var("GRAPH_BASENAME").expect("GRAPH_BASENAME not set");
     Logger::with(LevelFilter::Info)
         .log_to_file(
             flexi_logger::FileSpec::default()
@@ -24,20 +24,4 @@ fn main() {
         .start()
         .unwrap();
 
-    anomalous_commits::extract_author_commits(dir_orc);
 }
-
-// 13 columns
-// id ok
-// msg ok
-// author ok
-// date ok
-// tz ok
-// ??
-// committer ok
-// cdate ok
-// ctz ok
-// ??
-// directory ok
-// visit type ok
-// ??
