@@ -1,4 +1,5 @@
 use crate::env::{AuthorInfo, CommitterInfo};
+#[cfg(feature = "plotting")]
 use plotters::prelude::*;
 use std::collections::HashMap;
 
@@ -91,7 +92,7 @@ impl TimeOfDayProfile {
         // Normalization: log_24(2) ≈ 0.2181
         const NORMALIZATION_FACTOR: f64 = 0.2181;
 
-        let score = 1.0 - (probability.powf(NORMALIZATION_FACTOR));
+        let score = 1.0 - probability.powf(NORMALIZATION_FACTOR);
 
         // Clamp to [0, 1]
         score.max(0.0).min(1.0)
@@ -149,6 +150,7 @@ impl TimeOfDayProfile {
     ///
     /// # Returns
     /// Result indicating success or error message
+    #[cfg(feature = "plotting")]
     pub fn plot_distribution(
         &self,
         output_path: &str,
