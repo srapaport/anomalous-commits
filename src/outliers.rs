@@ -1,9 +1,22 @@
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use anyhow::Result;
 use num_cpus;
 use swh_graph::NodeType;
 use swh_graph::graph::*;
 use swh_graph::java_compat::mph::gov::GOVMPH;
 use swh_graph::labels::{EdgeLabel, VisitStatus};
+
+use crate::env;
+
+// Error counters for defensive programming
+static AUTHOR_ID_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static COMMITTER_ID_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static AUTHOR_TIMESTAMP_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static COMMITTER_TIMESTAMP_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static AUTHOR_TIMEZONE_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static COMMITTER_TIMEZONE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 pub fn retrieve_latest_snapshots<G: SwhFullGraph>(origin: usize, graph: &G) -> Option<usize> {
     let props = graph.properties();
@@ -64,23 +77,112 @@ pub fn parsing_graph_repositories(graph_basename: String) -> Result<()> {
         });
     });
 
+    // Print error statistics after processing
+    print_error_stats();
+
     Ok(())
 }
 
-/// #Files added
-/// #Files removed
-/// #Files modified
-/// #Files renamed
-/// #Unique file types modified per repo
-/// Proportion of ownership
-/// Number of commits for an author in a repo
-/// Time since 1st commit of an author in a repo
-/// Commit-time distribution per repo
-/// Time between commits
-/// Time between commits to a file
-/// File changed by many dev
-/// Introduction of prebuilt binaries
-/// Type of files changed per dev Xrepo
+/// #Files added [ ]
+/// #Files removed [ ]
+/// #Files modified [ ]
+/// #Files renamed [ ]
+/// #Unique file types modified per repo [ ]
+/// Proportion of ownership [ ]
+/// Number of commits for an author in a repo [x]
+/// Time since 1st commit of an author in a repo [x]
+/// Commit-time distribution per repo [ ]
+/// Time between commits [ ]
+/// Time between commits to a file [ ]
+/// File changed by many dev [ ]
+/// Introduction of prebuilt binaries [ ]
+/// Type of files changed per dev Xrepo [ ]
 fn process_snapshot<G: SwhFullGraph>(snapshot: usize, graph: &G) {
-    
+    let props = graph.properties();
+    let mut repo = env::RepositoryStats::new();
+    let mut visited = BTreeSet::new();
+    for succ in graph.successors(snapshot) {
+        // We only look at commits, we skip releases
+        // We don't retrieve the information on branch name so far
+        if props.node_type(succ) != NodeType::Revision {
+            continue;
+        }
+        process_revision(succ, &mut repo, &mut visited, graph);
+    }
+}
+
+fn process_revision<G: SwhFullGraph>(
+    commit: usize,
+    repo: &mut env::RepositoryStats,
+    visited: &mut BTreeSet<usize>,
+    graph: &G,
+) {
+    visited.insert(commit);
+    update_contributors(commit, repo, graph);
+}
+
+fn update_contributors<G: SwhFullGraph>(commit: usize, repo: &mut env::RepositoryStats, graph: &G) {
+    let props = graph.properties();
+
+    // Defensive programming: handle potential failures
+    let Some(author) = props.author_id(commit) else {
+        AUTHOR_ID_FAILURES.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+
+    let Some(committer) = props.committer_id(commit) else {
+        COMMITTER_ID_FAILURES.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+
+    let Some(date) = props.author_timestamp(commit) else {
+        AUTHOR_TIMESTAMP_FAILURES.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+
+    let Some(cdate) = props.committer_timestamp(commit) else {
+        COMMITTER_TIMESTAMP_FAILURES.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+
+    let Some(tz) = props.author_timestamp_offset(commit) else {
+        AUTHOR_TIMEZONE_FAILURES.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+
+    let Some(ctz) = props.committer_timestamp_offset(commit) else {
+        COMMITTER_TIMEZONE_FAILURES.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+
+    let author_id = format!("author:{:x}", author);
+    let committer_id = format!("committer:{:x}", committer);
+    let self_committed = author == committer;
+
+    let commit_id = props.swhid(commit).hash;
+    let commit_hash = commit_id
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    repo.update_contributors(author_id, &commit_hash, date, tz, self_committed);
+    repo.update_contributors(committer_id, &commit_hash, cdate, ctz, self_committed);
+}
+
+/// Print error statistics
+pub fn print_error_stats() {
+    let author_id_fails = AUTHOR_ID_FAILURES.load(Ordering::Relaxed);
+    let committer_id_fails = COMMITTER_ID_FAILURES.load(Ordering::Relaxed);
+    let author_ts_fails = AUTHOR_TIMESTAMP_FAILURES.load(Ordering::Relaxed);
+    let committer_ts_fails = COMMITTER_TIMESTAMP_FAILURES.load(Ordering::Relaxed);
+
+    println!("\n=== Error Statistics ===");
+    println!("Author ID failures: {}", author_id_fails);
+    println!("Committer ID failures: {}", committer_id_fails);
+    println!("Author timestamp failures: {}", author_ts_fails);
+    println!("Committer timestamp failures: {}", committer_ts_fails);
+    println!(
+        "Total failures: {}",
+        author_id_fails + committer_id_fails + author_ts_fails + committer_ts_fails
+    );
 }
