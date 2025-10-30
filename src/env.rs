@@ -1,7 +1,8 @@
-use std::collections::HashMap;
-
+use anyhow::Result;
 use chashmap::CHashMap;
+use rocksdb::{DB, Options};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -59,16 +60,44 @@ fn get_now_timestamp() -> i64 {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct RepositoryStats {
-    files_added: usize,
-    files_removed: usize,
-    files_modified: usize,
-    files_renamed: usize,
-    unique_file_type_interaction: HashMap<String, usize>, // Counter <.extension, #interactions>
+pub struct FileInfo {
+    pub creator: String,
+    pub interactions: HashMap<String, usize>, // <author, amount of interactions>
+    pub ownership_score: HashMap<String, f64>, // <author, score>
+    pub commit_time: Vec<i64>,
+}
 
-    contributors: Contributors,
-    commit_time: Vec<i64>,
-    time_between_commit: Vec<usize>,
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FileSystem {
+    pub files: HashMap<String, FileInfo>,
+    pub files_added: usize,
+    pub files_modified: usize,
+    pub files_removed: usize,
+    pub files_renamed: usize,
+}
+
+impl FileSystem {
+    pub fn new() -> FileSystem {
+        FileSystem {
+            files: HashMap::new(),
+            files_added: 0,
+            files_modified: 0,
+            files_removed: 0,
+            files_renamed: 0,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RepositoryStats {
+    pub files_added: usize,
+    pub files_removed: usize,
+    pub files_modified: usize,
+    pub files_renamed: usize,
+    pub unique_file_type_interaction: HashMap<String, usize>, // Counter <.extension, #interactions>
+    pub contributors: Contributors,
+    pub commit_time: Vec<i64>,
+    pub file_system: FileSystem,
 }
 
 impl RepositoryStats {
@@ -81,7 +110,7 @@ impl RepositoryStats {
             unique_file_type_interaction: HashMap::new(),
             contributors: Contributors::new(),
             commit_time: Vec::new(),
-            time_between_commit: Vec::new(),
+            file_system: FileSystem::new(),
         }
     }
 
@@ -113,5 +142,20 @@ impl RepositoryStats {
                 time_since_first_commit: get_now_timestamp() - date,
                 commits: vec![(commit.to_owned(), date, tz)],
             });
+    }
+
+    pub fn update_commit_time(&mut self, date: i64) {
+        self.commit_time.push(date);
+    }
+
+    pub fn flush_to_rocksdb(&mut self, origin: String, db_path: &str) -> Result<()> {
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        let db = DB::open(&opts, db_path)?;
+        self.commit_time.sort_unstable();
+        let value = serde_json::to_vec(&self)?;
+        db.put(origin.as_bytes(), value)?;
+        db.flush()?;
+        Ok(())
     }
 }

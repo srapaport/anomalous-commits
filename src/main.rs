@@ -1,11 +1,13 @@
+use anyhow::Result;
 use dotenvy::dotenv;
 use flexi_logger::{Cleanup, Criterion, Duplicate, Logger, Naming};
 use log::LevelFilter;
 use std::env;
 
-fn main() {
+fn main() -> Result<()> {
     dotenv().ok();
-    let dir_orc = env::var("GRAPH_BASENAME").expect("GRAPH_BASENAME not set");
+    let graph_path = env::var("GRAPH_BASENAME").expect("GRAPH_BASENAME not set");
+    let results_repo_stats = env::var("DATABASE_REPO_STATS").expect("DATABASE_REPO_STATS not set");
     Logger::with(LevelFilter::Info)
         .log_to_file(
             flexi_logger::FileSpec::default()
@@ -24,4 +26,6 @@ fn main() {
         .start()
         .unwrap();
 
+    anomalous_commits::outliers::parsing_graph_repositories(graph_path, results_repo_stats)?;
+    Ok(())
 }
