@@ -3,12 +3,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 use num_cpus;
+use rocksdb::{DB, Options};
 use swh_graph::NodeType;
 use swh_graph::graph::*;
-use swh_graph::mph::DynMphf;
 use swh_graph::labels::{EdgeLabel, VisitStatus};
-use rocksdb::{DB, Options};
+use swh_graph::mph::DynMphf;
 
+use crate::diff;
 use crate::env;
 
 // Error counters for defensive programming
@@ -104,15 +105,15 @@ pub fn parsing_graph_repositories(
     Ok(())
 }
 
-/// #Files added [ ]
-/// #Files removed [ ]
-/// #Files modified [ ]
-/// #Files renamed [ ]
+/// #Files added [x]
+/// #Files removed [x]
+/// #Files modified [x]
+/// #Files renamed [x]
 /// #Unique file types modified per repo [ ]
 /// Proportion of ownership [ ]
 /// Number of commits for an author in a repo [x]
 /// Time since 1st commit of an author in a repo [x]
-/// Commit-time distribution per repo [ ]
+/// Commit-time distribution per repo [x]
 /// Time between commits [x]
 /// Time between commits to a file [ ]
 /// File changed by many dev [ ]
@@ -144,10 +145,12 @@ fn process_revision<G: SwhFullGraph>(
     // update_diff_fs()
     let props = graph.properties();
     // update time between commits
+    let mut parents = vec![];
     for succ in graph.successors(commit) {
         if props.node_type(succ) != NodeType::Revision {
             continue;
         }
+        parents.push(succ);
         if let Some(commit_date) = props.committer_timestamp(commit) {
             repo.update_commit_time(commit_date);
         }
@@ -157,6 +160,7 @@ fn process_revision<G: SwhFullGraph>(
         }
         process_revision(succ, repo, visited, graph);
     }
+    diff::compute_diff(commit, parents, repo, graph);
 }
 
 fn update_contributors<G: SwhFullGraph>(commit: usize, repo: &mut env::RepositoryStats, graph: &G) {
@@ -223,4 +227,18 @@ pub fn print_error_stats() {
         "Total failures: {}",
         author_id_fails + committer_id_fails + author_ts_fails + committer_ts_fails
     );
+
+    let author_id_fails_diff = diff::AUTHOR_ID_FAILURES.load(Ordering::Relaxed);
+    let author_ts_fails_diff = diff::AUTHOR_TIMESTAMP_FAILURES.load(Ordering::Relaxed);
+    let root_dir_err = diff::ROOT_DIR_ERR.load(Ordering::Relaxed);
+    let path_name_err = diff::NAME_UTF8_ERR.load(Ordering::Relaxed);
+
+    println!("\n=== Diff Error Statistics ===");
+    println!("Author ID failures in diff: {}", author_id_fails_diff);
+    println!(
+        "Author timestamp failures in diff: {}",
+        author_ts_fails_diff
+    );
+    println!("Root directory errors in diff: {}", root_dir_err);
+    println!("Path name UTF-8 errors in diff: {}", path_name_err);
 }

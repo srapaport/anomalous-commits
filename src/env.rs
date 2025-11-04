@@ -90,10 +90,6 @@ impl FileSystem {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RepositoryStats {
-    pub files_added: usize,
-    pub files_removed: usize,
-    pub files_modified: usize,
-    pub files_renamed: usize,
     pub unique_file_type_interaction: HashMap<String, usize>, // Counter <.extension, #interactions>
     pub contributors: Contributors,
     pub commit_time: Vec<i64>,
@@ -103,10 +99,6 @@ pub struct RepositoryStats {
 impl RepositoryStats {
     pub fn new() -> RepositoryStats {
         RepositoryStats {
-            files_added: 0,
-            files_removed: 0,
-            files_modified: 0,
-            files_renamed: 0,
             unique_file_type_interaction: HashMap::new(),
             contributors: Contributors::new(),
             commit_time: Vec::new(),

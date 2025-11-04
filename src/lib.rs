@@ -1,6 +1,7 @@
 pub mod env;
 pub mod time_of_day;
 pub mod outliers;
+pub mod diff;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
