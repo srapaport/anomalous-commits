@@ -140,27 +140,34 @@ fn process_revision<G: SwhFullGraph>(
     visited: &mut BTreeSet<usize>,
     graph: &G,
 ) {
-    visited.insert(commit);
-    update_contributors(commit, repo, graph);
-    // update_diff_fs()
-    let props = graph.properties();
-    // update time between commits
-    let mut parents = vec![];
-    for succ in graph.successors(commit) {
-        if props.node_type(succ) != NodeType::Revision {
+    let mut stack = vec![commit];
+    
+    while let Some(current_commit) = stack.pop() {
+        if visited.contains(&current_commit) {
             continue;
         }
-        parents.push(succ);
-        if let Some(commit_date) = props.committer_timestamp(commit) {
-            repo.update_commit_time(commit_date);
+        visited.insert(current_commit);
+        
+        update_contributors(current_commit, repo, graph);
+        let props = graph.properties();
+        
+        // update time between commits
+        let mut parents = vec![];
+        for succ in graph.successors(current_commit) {
+            if props.node_type(succ) != NodeType::Revision {
+                continue;
+            }
+            parents.push(succ);
+            if let Some(commit_date) = props.committer_timestamp(current_commit) {
+                repo.update_commit_time(commit_date);
+            }
+            // Add successor to stack if not visited
+            if !visited.contains(&succ) {
+                stack.push(succ);
+            }
         }
-        // Process the successor if not visted already
-        if visited.contains(&succ) {
-            continue;
-        }
-        process_revision(succ, repo, visited, graph);
+        diff::compute_diff(current_commit, parents, repo, graph);
     }
-    diff::compute_diff(commit, parents, repo, graph);
 }
 
 fn update_contributors<G: SwhFullGraph>(commit: usize, repo: &mut env::RepositoryStats, graph: &G) {
