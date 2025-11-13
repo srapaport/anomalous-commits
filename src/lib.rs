@@ -1,8 +1,9 @@
-pub mod env;
-pub mod time_of_day;
-pub mod outliers;
 pub mod diff;
+pub mod env;
+pub mod outliers;
+pub mod time_of_day;
 
+use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::info;
 use orc_rust::ArrowReaderBuilder;
@@ -10,10 +11,23 @@ use rayon::prelude::*;
 use rocksdb::{DB, Options};
 use std::{
     fs::File,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
+use swh_graph::NodeType;
+use swh_graph::graph::SwhFullGraph;
 
-pub fn flush_to_rocksdb(authors: env::Authors, committers: env::Committers, db_path: &str) -> Result<(), rocksdb::Error> {
+static URL_ERRORS: AtomicUsize = AtomicUsize::new(0);
+static URL_ERRORS_UTF8: AtomicUsize = AtomicUsize::new(0);
+static EMPTY_REPO: AtomicUsize = AtomicUsize::new(0);
+
+pub fn flush_to_rocksdb(
+    authors: env::Authors,
+    committers: env::Committers,
+    db_path: &str,
+) -> Result<(), rocksdb::Error> {
     // Delete the database if it exists to start fresh
     if std::path::Path::new(db_path).exists() {
         DB::destroy(&Options::default(), db_path)?;
@@ -34,10 +48,9 @@ pub fn flush_to_rocksdb(authors: env::Authors, committers: env::Committers, db_p
             time_since_first_commit: author_info.time_since_first_commit,
             commits: author_info.commits,
         };
-        
-        let value = serde_json::to_vec(&person_record)
-            .expect("Failed to serialize author info");
-        
+
+        let value = serde_json::to_vec(&person_record).expect("Failed to serialize author info");
+
         // Store in RocksDB with "author:<author_id>" as key
         let key = format!("author:{}", author_id);
         db.put(key.as_bytes(), value)?;
@@ -54,9 +67,8 @@ pub fn flush_to_rocksdb(authors: env::Authors, committers: env::Committers, db_p
             commits: committer_info.commits,
         };
 
-        let value = serde_json::to_vec(&person_record)
-            .expect("Failed to serialize committer info");
-        
+        let value = serde_json::to_vec(&person_record).expect("Failed to serialize committer info");
+
         // Store in RocksDB with "committer:<committer_id>" as key
         let key = format!("committer:{}", committer_id);
         db.put(key.as_bytes(), value)?;
@@ -71,7 +83,7 @@ pub fn extract_author_commits(dir_orc: String) {
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    
+
     // Error counters for column-level failures
     let error_commit_ids = AtomicUsize::new(0);
     let error_author_ids = AtomicUsize::new(0);
@@ -80,7 +92,7 @@ pub fn extract_author_commits(dir_orc: String) {
     let error_committer_ids = AtomicUsize::new(0);
     let error_committer_dates = AtomicUsize::new(0);
     let error_committer_timezones = AtomicUsize::new(0);
-    
+
     // Error counters for row-level missing data
     let error_missing_commit_id = AtomicUsize::new(0);
     let error_missing_author_id = AtomicUsize::new(0);
@@ -89,7 +101,7 @@ pub fn extract_author_commits(dir_orc: String) {
     let error_missing_committer_id = AtomicUsize::new(0);
     let error_missing_committer_date = AtomicUsize::new(0);
     let error_missing_committer_tz = AtomicUsize::new(0);
-    
+
     let all_authors = env::Authors::new();
     let all_committers = env::Committers::new();
     let now = std::time::SystemTime::now()
@@ -246,8 +258,9 @@ pub fn extract_author_commits(dir_orc: String) {
                         author_info.time_since_first_commit =
                             author_info.time_since_first_commit.max(now - date);
                         author_info.number_of_commits = author_info.number_of_commits + 1;
-                        if self_committed{
-                            author_info.number_of_self_commits = author_info.number_of_self_commits + 1;
+                        if self_committed {
+                            author_info.number_of_self_commits =
+                                author_info.number_of_self_commits + 1;
                         }
                         author_info.commits.push((id.to_owned(), date, tz));
                     },
@@ -267,8 +280,9 @@ pub fn extract_author_commits(dir_orc: String) {
                         committer_info.time_since_first_commit =
                             committer_info.time_since_first_commit.max(now - cdate);
                         committer_info.number_of_commits = committer_info.number_of_commits + 1;
-                        if self_committed{
-                            committer_info.number_of_self_commits = committer_info.number_of_self_commits + 1;
+                        if self_committed {
+                            committer_info.number_of_self_commits =
+                                committer_info.number_of_self_commits + 1;
                         }
                         committer_info.commits.push((id.to_owned(), cdate, ctz));
                     },
@@ -278,18 +292,39 @@ pub fn extract_author_commits(dir_orc: String) {
         bar.inc(1);
     });
     bar.finish();
-    
+
     // Display error statistics
     println!("\n========== Error Report ==========");
     println!("Column-level errors (entire column failed to read):");
-    println!("  - Commit IDs:           {}", error_commit_ids.load(Ordering::Relaxed));
-    println!("  - Author IDs:           {}", error_author_ids.load(Ordering::Relaxed));
-    println!("  - Author Dates:         {}", error_author_dates.load(Ordering::Relaxed));
-    println!("  - Author Timezones:     {}", error_author_timezones.load(Ordering::Relaxed));
-    println!("  - Committer IDs:        {}", error_committer_ids.load(Ordering::Relaxed));
-    println!("  - Committer Dates:      {}", error_committer_dates.load(Ordering::Relaxed));
-    println!("  - Committer Timezones:  {}", error_committer_timezones.load(Ordering::Relaxed));
-    
+    println!(
+        "  - Commit IDs:           {}",
+        error_commit_ids.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Author IDs:           {}",
+        error_author_ids.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Author Dates:         {}",
+        error_author_dates.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Author Timezones:     {}",
+        error_author_timezones.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Committer IDs:        {}",
+        error_committer_ids.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Committer Dates:      {}",
+        error_committer_dates.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Committer Timezones:  {}",
+        error_committer_timezones.load(Ordering::Relaxed)
+    );
+
     let total_column_errors = error_commit_ids.load(Ordering::Relaxed)
         + error_author_ids.load(Ordering::Relaxed)
         + error_author_dates.load(Ordering::Relaxed)
@@ -297,16 +332,37 @@ pub fn extract_author_commits(dir_orc: String) {
         + error_committer_ids.load(Ordering::Relaxed)
         + error_committer_dates.load(Ordering::Relaxed)
         + error_committer_timezones.load(Ordering::Relaxed);
-    
+
     println!("\nRow-level errors (missing data in specific rows):");
-    println!("  - Missing Commit ID:       {}", error_missing_commit_id.load(Ordering::Relaxed));
-    println!("  - Missing Author ID:       {}", error_missing_author_id.load(Ordering::Relaxed));
-    println!("  - Missing Author Date:     {}", error_missing_author_date.load(Ordering::Relaxed));
-    println!("  - Missing Author TZ:       {}", error_missing_author_tz.load(Ordering::Relaxed));
-    println!("  - Missing Committer ID:    {}", error_missing_committer_id.load(Ordering::Relaxed));
-    println!("  - Missing Committer Date:  {}", error_missing_committer_date.load(Ordering::Relaxed));
-    println!("  - Missing Committer TZ:    {}", error_missing_committer_tz.load(Ordering::Relaxed));
-    
+    println!(
+        "  - Missing Commit ID:       {}",
+        error_missing_commit_id.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Missing Author ID:       {}",
+        error_missing_author_id.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Missing Author Date:     {}",
+        error_missing_author_date.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Missing Author TZ:       {}",
+        error_missing_author_tz.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Missing Committer ID:    {}",
+        error_missing_committer_id.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Missing Committer Date:  {}",
+        error_missing_committer_date.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Missing Committer TZ:    {}",
+        error_missing_committer_tz.load(Ordering::Relaxed)
+    );
+
     let total_row_errors = error_missing_commit_id.load(Ordering::Relaxed)
         + error_missing_author_id.load(Ordering::Relaxed)
         + error_missing_author_date.load(Ordering::Relaxed)
@@ -314,13 +370,92 @@ pub fn extract_author_commits(dir_orc: String) {
         + error_missing_committer_id.load(Ordering::Relaxed)
         + error_missing_committer_date.load(Ordering::Relaxed)
         + error_missing_committer_tz.load(Ordering::Relaxed);
-    
+
     println!("\nTotal Errors:");
     println!("  - Column-level: {}", total_column_errors);
     println!("  - Row-level:    {}", total_row_errors);
-    println!("  - Grand Total:  {}", total_column_errors + total_row_errors);
+    println!(
+        "  - Grand Total:  {}",
+        total_column_errors + total_row_errors
+    );
     println!("==================================\n");
-    
+
     // Transfer ownership to flush_to_rocksdb - data will be consumed and freed
-    flush_to_rocksdb(all_authors, all_committers, "results/persons.db").unwrap();
+    flush_to_rocksdb(all_authors, all_committers, "data/persons.db").unwrap();
+}
+
+pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Result<()> {
+    if std::path::Path::new(db_path).exists() {
+        DB::destroy(&Options::default(), db_path)?;
+    }
+
+    // Open DB once and share it across threads
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+    let db = Arc::new(Mutex::new(DB::open(&opts, db_path)?));
+
+    let amount_origins = *graph.num_nodes_by_type()?.get(&NodeType::Origin).unwrap();
+    let bar = ProgressBar::new(amount_origins as u64);
+    bar.set_style(
+        ProgressStyle::with_template(
+            "{msg} {wide_bar} {pos} {percent_precise}% {elapsed_precise} {eta}",
+        )
+        .unwrap(),
+    );
+    bar.set_message("Retrieving Repositories Stats");
+
+    (0..graph.num_nodes())
+        .into_par_iter()
+        .filter(|&node| graph.properties().node_type(node) == NodeType::Origin)
+        .filter_map(|node| {
+            let url = graph.properties().message(node).or_else(|| {
+                URL_ERRORS.fetch_add(1, Ordering::Relaxed);
+                None
+            })?;
+            let url_string = String::from_utf8(url).ok().or_else(|| {
+                URL_ERRORS_UTF8.fetch_add(1, Ordering::Relaxed);
+                None
+            })?;
+            let latest_snapshot = outliers::retrieve_latest_snapshots(node, graph)?;
+            Some((url_string, latest_snapshot))
+        })
+        .for_each(|(url_string, latest_snapshot)| {
+            bar.inc(1);
+            let start = std::time::Instant::now();
+            let mut repo = outliers::process_snapshot(latest_snapshot, graph);
+            info!("origin: {} | with: {} commits | took {:?}", &url_string, repo.commit_time.len(), start.elapsed());
+            println!("{},{},{},{:?}", &url_string, repo.commit_time.len(), repo.file_system.files.len(), start.elapsed().as_secs_f64());
+            if !repo.commit_time.is_empty(){
+                repo.flush_to_rocksdb_async_safe(url_string, &db).unwrap();
+            }
+            else{
+                EMPTY_REPO.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    print_error_stats();
+    // Explicitly flush at the end
+    db.lock().unwrap().flush()?;
+    Ok(())
+}
+
+fn print_error_stats() {
+    // Print error statistics
+    println!("\n========== URL Error Report ==========");
+    println!(
+        "  - Missing URLs:        {}",
+        URL_ERRORS.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Invalid UTF-8 URLs:  {}",
+        URL_ERRORS_UTF8.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - No Commits:  {}",
+        EMPTY_REPO.load(Ordering::Relaxed)
+    );
+    println!(
+        "  - Total URL errors:    {}",
+        URL_ERRORS.load(Ordering::Relaxed) + URL_ERRORS_UTF8.load(Ordering::Relaxed) + EMPTY_REPO.load(Ordering::Relaxed)
+    );
+    println!("======================================\n");
 }

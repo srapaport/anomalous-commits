@@ -3,7 +3,7 @@ use chashmap::CHashMap;
 use rocksdb::{DB, Options};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AuthorInfo {
@@ -114,6 +114,13 @@ impl RepositoryStats {
         tz: i16,
         self_committed: bool,
     ) {
+        let person_type = {
+            if contributor_id.contains("committer") {
+                PersonType::Committer
+            } else {
+                PersonType::Author
+            }
+        };
         self.contributors
             .entry(contributor_id)
             .and_modify(|pr| {
@@ -126,7 +133,7 @@ impl RepositoryStats {
                 pr.commits.push((commit.to_owned(), date, tz));
             })
             .or_insert_with(|| PersonRecord {
-                person_type: PersonType::Author,
+                person_type: person_type,
                 nom: None,
                 email: None,
                 number_of_commits: 1,
@@ -140,6 +147,20 @@ impl RepositoryStats {
         self.commit_time.push(date);
     }
 
+    pub fn flush_to_rocksdb_async_safe(
+        &mut self,
+        origin: String,
+        db: &Arc<Mutex<DB>>,
+    ) -> Result<()> {
+        self.commit_time.sort_unstable();
+        let value = serde_json::to_vec(&self)?;
+
+        // Lock the DB for this write operation
+        let db_lock = db.lock().unwrap();
+        db_lock.put(origin.as_bytes(), value)?;
+
+        Ok(())
+    }
     pub fn flush_to_rocksdb(&mut self, origin: String, db_path: &str) -> Result<()> {
         let mut opts = Options::default();
         opts.create_if_missing(true);

@@ -1,13 +1,9 @@
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::Result;
-use num_cpus;
-use rocksdb::{DB, Options};
 use swh_graph::NodeType;
 use swh_graph::graph::*;
 use swh_graph::labels::{EdgeLabel, VisitStatus};
-use swh_graph::mph::DynMphf;
 
 use crate::diff;
 use crate::env;
@@ -19,8 +15,6 @@ static AUTHOR_TIMESTAMP_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static COMMITTER_TIMESTAMP_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static AUTHOR_TIMEZONE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static COMMITTER_TIMEZONE_FAILURES: AtomicUsize = AtomicUsize::new(0);
-static URL_ERRORS: AtomicUsize = AtomicUsize::new(0);
-static URL_ERRORS_UTF8: AtomicUsize = AtomicUsize::new(0);
 
 pub fn retrieve_latest_snapshots<G: SwhFullGraph>(origin: usize, graph: &G) -> Option<usize> {
     let props = graph.properties();
@@ -47,62 +41,6 @@ pub fn retrieve_latest_snapshots<G: SwhFullGraph>(origin: usize, graph: &G) -> O
     }
 
     None
-}
-
-pub fn parsing_graph_repositories(
-    graph_basename: String,
-    db_repo_stats_path: String,
-) -> Result<()> {
-    let graph = SwhBidirectionalGraph::new(graph_basename)?
-        .load_all_properties::<DynMphf>()?
-        .load_forward_labels()?
-        .load_backward_labels()?;
-    let props = graph.properties();
-
-    if std::path::Path::new(&db_repo_stats_path).exists() {
-        DB::destroy(&Options::default(), &db_repo_stats_path)?;
-    }
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus::get() / 3)
-        .build()?;
-
-    pool.install(|| {
-        rayon::scope(|s| {
-            for node in 0..graph.num_nodes() {
-                // We only look from an origin node
-                if props.node_type(node) != NodeType::Origin {
-                    continue;
-                }
-                let Some(url) = props.message(node) else {
-                    URL_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                };
-                let Ok(url_string) = String::from_utf8(url) else {
-                    URL_ERRORS_UTF8.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                };
-                // We retrieve the latest snapshot of the origin
-                let Some(latest_snapshot) = retrieve_latest_snapshots(node, &graph) else {
-                    continue;
-                };
-
-                // We process the latest snapshot in a thread
-                let graph = &graph;
-                let db_repo_stats_path = &db_repo_stats_path;
-                s.spawn(move |_| {
-                    let mut repo = process_snapshot(latest_snapshot, graph);
-                    repo.flush_to_rocksdb(url_string, db_repo_stats_path)
-                        .unwrap();
-                });
-            }
-        });
-    });
-
-    // Print error statistics after processing
-    print_error_stats();
-
-    Ok(())
 }
 
 /// #Files added [x]
@@ -141,16 +79,16 @@ fn process_revision<G: SwhFullGraph>(
     graph: &G,
 ) {
     let mut stack = vec![commit];
-    
+
     while let Some(current_commit) = stack.pop() {
         if visited.contains(&current_commit) {
             continue;
         }
         visited.insert(current_commit);
-        
+
         update_contributors(current_commit, repo, graph);
         let props = graph.properties();
-        
+
         // update time between commits
         let mut parents = vec![];
         for succ in graph.successors(current_commit) {
@@ -170,7 +108,7 @@ fn process_revision<G: SwhFullGraph>(
     }
 }
 
-fn update_contributors<G: SwhFullGraph>(commit: usize, repo: &mut env::RepositoryStats, graph: &G) {
+pub fn update_contributors<G: SwhFullGraph>(commit: usize, repo: &mut env::RepositoryStats, graph: &G) {
     let props = graph.properties();
 
     // Defensive programming: handle potential failures
