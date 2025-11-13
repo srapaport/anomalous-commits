@@ -1,6 +1,7 @@
 pub mod diff;
 pub mod env;
 pub mod outliers;
+pub mod score;
 pub mod time_of_day;
 
 use anyhow::Result;
@@ -423,12 +424,22 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
             bar.inc(1);
             let start = std::time::Instant::now();
             let mut repo = outliers::process_snapshot(latest_snapshot, graph);
-            info!("origin: {} | with: {} commits | took {:?}", &url_string, repo.commit_time.len(), start.elapsed());
-            println!("{},{},{},{:?}", &url_string, repo.commit_time.len(), repo.file_system.files.len(), start.elapsed().as_secs_f64());
-            if !repo.commit_time.is_empty(){
+            info!(
+                "origin: {} | with: {} commits | took {:?}",
+                &url_string,
+                repo.commit_time.len(),
+                start.elapsed()
+            );
+            println!(
+                "{},{},{},{:?}",
+                &url_string,
+                repo.commit_time.len(),
+                repo.file_system.files.len(),
+                start.elapsed().as_secs_f64()
+            );
+            if !repo.commit_time.is_empty() {
                 repo.flush_to_rocksdb_async_safe(url_string, &db).unwrap();
-            }
-            else{
+            } else {
                 EMPTY_REPO.fetch_add(1, Ordering::Relaxed);
             }
         });
@@ -449,13 +460,12 @@ fn print_error_stats() {
         "  - Invalid UTF-8 URLs:  {}",
         URL_ERRORS_UTF8.load(Ordering::Relaxed)
     );
-    println!(
-        "  - No Commits:  {}",
-        EMPTY_REPO.load(Ordering::Relaxed)
-    );
+    println!("  - No Commits:  {}", EMPTY_REPO.load(Ordering::Relaxed));
     println!(
         "  - Total URL errors:    {}",
-        URL_ERRORS.load(Ordering::Relaxed) + URL_ERRORS_UTF8.load(Ordering::Relaxed) + EMPTY_REPO.load(Ordering::Relaxed)
+        URL_ERRORS.load(Ordering::Relaxed)
+            + URL_ERRORS_UTF8.load(Ordering::Relaxed)
+            + EMPTY_REPO.load(Ordering::Relaxed)
     );
     println!("======================================\n");
 }
