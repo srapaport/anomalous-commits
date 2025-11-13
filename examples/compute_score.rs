@@ -1,7 +1,6 @@
 use anomalous_commits::env::RepositoryStats;
 use anomalous_commits::score::{AnomalyThresholds, compute_score};
 use anyhow::Result;
-use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::str::FromStr;

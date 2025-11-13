@@ -1,9 +1,8 @@
 use swh_graph::NodeType;
 use swh_graph::graph::SwhFullGraph;
 
-use crate::env::{PersonRecord, RepositoryStats};
+use crate::env::RepositoryStats;
 use crate::time_of_day::{Commit, TimeOfDayProfile};
-use std::collections::HashMap;
 
 /// Thresholds for anomaly detection
 #[derive(Debug, Clone)]
