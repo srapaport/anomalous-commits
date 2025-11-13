@@ -3,11 +3,17 @@ use dotenvy::dotenv;
 use flexi_logger::{Cleanup, Criterion, Duplicate, Logger, Naming};
 use log::LevelFilter;
 use std::env;
+use swh_graph::graph::*;
+use swh_graph::mph::DynMphf;
 
 fn main() -> Result<()> {
     dotenv().ok();
     let graph_path = env::var("GRAPH_BASENAME").expect("GRAPH_BASENAME not set");
-    let results_repo_stats = env::var("DATABASE_REPO_STATS").expect("DATABASE_REPO_STATS not set");
+    let graph = SwhBidirectionalGraph::new(graph_path)?
+        .load_all_properties::<DynMphf>()?
+        .load_forward_labels()?
+        .load_backward_labels()?;
+    let db_path = "data/RepositoryStats.db";
     Logger::with(LevelFilter::Info)
         .log_to_file(
             flexi_logger::FileSpec::default()
@@ -26,6 +32,5 @@ fn main() -> Result<()> {
         .start()
         .unwrap();
 
-    anomalous_commits::outliers::parsing_graph_repositories(graph_path, results_repo_stats)?;
-    Ok(())
+    anomalous_commits::build_repo_stats(&graph, db_path)
 }
