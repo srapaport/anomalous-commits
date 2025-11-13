@@ -87,6 +87,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swh-graph",
+ "swh-graph-stdlib",
 ]
 
 [[package]]
@@ -3367,6 +3368,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rapidhash"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9813f789f95ee4fe6b4d01834404d7cccacbc3f6c029343af910b3c2835eb9f1"
+
+[[package]]
 name = "rayon"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3778,6 +3785,22 @@ dependencies = [
  "webgraph",
  "webgraph-cli",
  "zstd 0.12.4",
+]
+
+[[package]]
+name = "swh-graph-stdlib"
+version = "8.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1568613a63052d6e38ebb584f76251a5407b0622cd15ea62a4ee30ccb83cd63c"
+dependencies = [
+ "anyhow",
+ "dsi-bitstream",
+ "epserde",
+ "itertools 0.11.0",
+ "log",
+ "rapidhash",
+ "sux",
+ "swh-graph",
 ]
 
 [[package]]

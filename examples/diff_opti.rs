@@ -1,9 +1,9 @@
-use std::collections::BTreeSet;
 use std::time::Instant;
 
 use anyhow::Result;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
+use log::debug;
 use swh_graph::NodeType;
 use swh_graph::graph::*;
 use swh_graph::mph::DynMphf;
@@ -15,10 +15,6 @@ fn main() -> Result<()> {
         .load_forward_labels()?
         .load_backward_labels()?;
 
-    let url = "https://github.com/php/php-src";
-    let swhid_url = swh_graph::SWHID::from_origin_url(url);
-    let node_url = graph.properties().node_id(swhid_url)?;
-
     let mut time_manual = vec![];
     let mut time_crate = vec![];
     let bar = ProgressBar::new(100);
@@ -29,25 +25,20 @@ fn main() -> Result<()> {
 
     let mut amount_compare = 100;
 
-    let mut to_visit = vec![node_url];
-    let mut visited = BTreeSet::new();
     let mut revisions_found = 0;
     let mut single_parent_revisions = 0;
     let mut successful_compares = 0;
 
-    while let Some(visiting) = to_visit.pop()
-        && amount_compare > 0
-    {
-        if visited.contains(&visiting) {
+    for node in 0..graph.num_nodes() {
+        if amount_compare < 1 {
+            break;
+        }
+        if graph.properties().node_type(node) != NodeType::Revision {
             continue;
         }
-        visited.insert(visiting);
 
-        for succ in graph.successors(visiting) {
+        for succ in graph.successors(node) {
             match graph.properties().node_type(succ) {
-                NodeType::Snapshot | NodeType::Release => {
-                    to_visit.push(succ);
-                }
                 NodeType::Revision => {
                     revisions_found += 1;
                     let mut parents = vec![];
@@ -71,11 +62,10 @@ fn main() -> Result<()> {
                                 successful_compares += 1;
                             }
                             Err(e) => {
-                                println!("Error in compute_time_diff: {:?}", e);
+                                debug!("Error in compute_time_diff: {:?}", e);
                             }
                         }
                     }
-                    to_visit.push(succ);
                 }
                 _ => (),
             }
@@ -93,9 +83,9 @@ fn main() -> Result<()> {
         let time_man = time_manual.get(i).unwrap();
         let time_cra = time_crate.get(i).unwrap();
         if time_cra < time_man {
-            println!("stdlib is faster than me by {}ms", time_man - time_cra);
+            println!("stdlib is faster than me by {} ns", time_man - time_cra);
         } else {
-            println!("stdlib is slower than me by {}ms", time_cra - time_man);
+            println!("stdlib is slower than me by {} ns", time_cra - time_man);
         }
     }
     Ok(())
@@ -108,44 +98,44 @@ fn compute_time_diff<G: SwhFullGraph>(
     time_manual: &mut Vec<u128>,
     time_crate: &mut Vec<u128>,
 ) -> Result<()> {
-    println!(
+    debug!(
         "DEBUG: compute_time_diff called with new={}, old={}",
         new, old
     );
 
     let new_dir = anomalous_commits::diff::get_root_dir(new, graph);
     if new_dir.is_none() {
-        println!("DEBUG: get_root_dir returned None for new commit {}", new);
+        debug!("DEBUG: get_root_dir returned None for new commit {}", new);
         return Err(anyhow::anyhow!("Failed to get root dir for new commit"));
     }
     let new_dir = new_dir.unwrap();
-    println!("DEBUG: new_dir={}", new_dir);
+    debug!("DEBUG: new_dir={}", new_dir);
 
     let old_dir = anomalous_commits::diff::get_root_dir(old, graph);
     if old_dir.is_none() {
-        println!("DEBUG: get_root_dir returned None for old commit {}", old);
+        debug!("DEBUG: get_root_dir returned None for old commit {}", old);
         return Err(anyhow::anyhow!("Failed to get root dir for old commit"));
     }
     let old_dir = old_dir.unwrap();
-    println!("DEBUG: old_dir={}", old_dir);
+    debug!("DEBUG: old_dir={}", old_dir);
 
-    println!("DEBUG: Starting manual diff computation...");
+    debug!("DEBUG: Starting manual diff computation...");
     let start = Instant::now();
     anomalous_commits::diff::compute_diff_stats(new_dir, &[old_dir], graph);
-    let manual_time = start.elapsed().as_millis();
+    let manual_time = start.elapsed().as_nanos();
     time_manual.push(manual_time);
-    println!("DEBUG: Manual diff took {}ms", manual_time);
+    debug!("DEBUG: Manual diff took {} ns", manual_time);
 
-    println!("DEBUG: Starting crate diff computation...");
+    debug!("DEBUG: Starting crate diff computation...");
     let start = Instant::now();
     match diff::tree_diff_dirs(&graph, old_dir, new_dir, None) {
         Ok(_) => {
-            let crate_time = start.elapsed().as_millis();
+            let crate_time = start.elapsed().as_nanos();
             time_crate.push(crate_time);
-            println!("DEBUG: Crate diff took {}ms", crate_time);
+            debug!("DEBUG: Crate diff took {} ns", crate_time);
         }
         Err(e) => {
-            println!("DEBUG: tree_diff_dirs failed: {:?}", e);
+            debug!("DEBUG: tree_diff_dirs failed: {:?}", e);
             return Err(e.into());
         }
     }
