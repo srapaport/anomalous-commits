@@ -72,7 +72,7 @@ pub fn compute_diff<G: SwhFullGraph>(
     );
 }
 
-fn get_root_dir<G: SwhFullGraph>(commit: usize, graph: &G) -> Option<usize> {
+pub fn get_root_dir<G: SwhFullGraph>(commit: usize, graph: &G) -> Option<usize> {
     for succ in graph.successors(commit) {
         if graph.properties().node_type(succ) == NodeType::Directory {
             return Some(succ);
@@ -89,7 +89,7 @@ pub struct DiffStats {
     pub renamed: usize,
 }
 
-fn compute_diff_stats<G: SwhFullGraph>(
+pub fn compute_diff_stats<G: SwhFullGraph>(
     commit_root_dir: usize,
     parent_root_dirs: &[usize],
     graph: &G,
