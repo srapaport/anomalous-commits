@@ -84,6 +84,8 @@ fn main() -> Result<()> {
         let time_cra = time_crate.get(i).unwrap();
         if time_cra < time_man {
             println!("stdlib is faster than me by {} ns", time_man - time_cra);
+            println!("man {} ns", time_man);
+            println!("crate {} ns", time_cra);
         } else {
             println!("stdlib is slower than me by {} ns", time_cra - time_man);
         }

@@ -61,7 +61,7 @@ impl CommitInfo {
         let tz_offset = props.committer_timestamp_offset(commit).unwrap_or(0);
         let author_bytes = props.author_id(commit)?;
         let author_id = format!("author:{:x}", author_bytes);
-        let committer_bytes = props.committer_id(commit)?;
+        let committer_bytes: u32 = props.committer_id(commit)?;
         let committer_id = format!("committer:{:x}", committer_bytes);
 
         let root_dir = crate::diff::get_root_dir(commit, graph)?;
