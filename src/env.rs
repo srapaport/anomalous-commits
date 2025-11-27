@@ -5,6 +5,31 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+pub const SENSITIVE_FILE_EXTENSIONS: &[&str] = &[
+    ".xml",
+    ".json",
+    ".jar",
+    ".ini",
+    ".dat",
+    ".cnf",
+    ".yml",
+    ".toml",
+    ".gradle",
+    ".bin",
+    ".config",
+    ".exe",
+    ".properties",
+    ".cmd",
+    ".build",
+];
+
+pub const BINARY_EXTENSIONS: &[&str] = &[
+    ".exe", ".dll", // Executables and libraries
+    ".o",   // Compiled object files
+    ".jar", // Java archives
+    ".bin", ".dat", // Generic binary
+];
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AuthorInfo {
     pub nom: Option<String>,
