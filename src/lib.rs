@@ -417,7 +417,7 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
                 URL_ERRORS_UTF8.fetch_add(1, Ordering::Relaxed);
                 None
             })?;
-            let latest_snapshot = outliers::retrieve_latest_snapshots(node, graph)?;
+            let latest_snapshot = outliers::retrieve_latest_snapshot(node, graph)?;
             Some((url_string, latest_snapshot))
         })
         .for_each(|(url_string, latest_snapshot)| {

@@ -29,7 +29,7 @@ fn main() -> Result<()> {
             continue;
         };
         let Some(latest_snapshot) =
-            anomalous_commits::outliers::retrieve_latest_snapshots(node, &graph)
+            anomalous_commits::outliers::retrieve_latest_snapshot(node, &graph)
         else {
             continue;
         };

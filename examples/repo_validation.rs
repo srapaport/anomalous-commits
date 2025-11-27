@@ -92,7 +92,7 @@ fn find_sus<G: SwhFullGraph>(url: &str, sus_commits: &[&str], graph: &G) -> Resu
 }
 
 fn single_repo<G: SwhFullGraph>(repo: usize, graph: &G) -> Result<()> {
-    let snapshot = anomalous_commits::outliers::retrieve_latest_snapshots(repo, graph)
+    let snapshot = anomalous_commits::outliers::retrieve_latest_snapshot(repo, graph)
         .ok_or_else(|| anyhow::anyhow!("No snapshot found for repository {}", repo))?;
 
     let mut repo_stats = process_snapshot(snapshot, graph);

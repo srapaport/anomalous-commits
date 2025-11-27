@@ -16,7 +16,7 @@ static COMMITTER_TIMESTAMP_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static AUTHOR_TIMEZONE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static COMMITTER_TIMEZONE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
-pub fn retrieve_latest_snapshots<G: SwhFullGraph>(origin: usize, graph: &G) -> Option<usize> {
+pub fn retrieve_latest_snapshot<G: SwhFullGraph>(origin: usize, graph: &G) -> Option<usize> {
     let props = graph.properties();
     let mut snapshots = vec![];
     for (succ, labels) in graph.labeled_successors(origin) {
