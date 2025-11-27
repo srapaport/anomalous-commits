@@ -406,6 +406,58 @@ fn collect_all_files_in_tree<G: SwhFullGraph>(
     files
 }
 
+/// Helper function to update file info and interactions
+fn update_file_interaction(
+    repo: &mut RepositoryStats,
+    path: String,
+    author_id: &str,
+    commit_timestamp: i64,
+    set_creator: bool,
+) {
+    let extension = String::from(
+        std::path::Path::new(&path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or(""),
+    );
+
+    let file_info = repo
+        .file_system
+        .files
+        .entry(path)
+        .or_insert_with(|| FileInfo {
+            creator: if set_creator {
+                author_id.to_string()
+            } else {
+                String::new()
+            },
+            interactions: HashMap::new(),
+            ownership_score: HashMap::new(),
+            commit_time: Vec::new(),
+        });
+
+    // If file already exists and creator should be set, update creator if empty
+    if set_creator && file_info.creator.is_empty() {
+        file_info.creator = author_id.to_string();
+    }
+
+    // Update interactions
+    *file_info
+        .interactions
+        .entry(author_id.to_string())
+        .or_insert(0) += 1;
+    file_info.commit_time.push(commit_timestamp);
+
+    // Update extensions
+    repo.contributors
+        .get_mut(author_id)
+        .unwrap()
+        .extensions
+        .entry(extension)
+        .and_modify(|count| *count += 1)
+        .or_insert(1);
+}
+
 fn update_file_system(
     repo: &mut RepositoryStats,
     author_id: String,
@@ -424,87 +476,21 @@ fn update_file_system(
 
     // For added files: set creator and update interactions
     for (path, _node_id) in final_added {
-        let file_info = repo
-            .file_system
-            .files
-            .entry(path)
-            .or_insert_with(|| FileInfo {
-                creator: author_id.to_string(),
-                interactions: HashMap::new(),
-                ownership_score: HashMap::new(),
-                commit_time: Vec::new(),
-            });
-
-        // If file already exists (shouldn't happen for added files), update creator if empty
-        if file_info.creator.is_empty() {
-            file_info.creator = author_id.to_string();
-        }
-
-        // Update interactions
-        *file_info
-            .interactions
-            .entry(author_id.to_string())
-            .or_insert(0) += 1;
-        file_info.commit_time.push(commit_timestamp);
+        update_file_interaction(repo, path, &author_id, commit_timestamp, true);
     }
 
     // For deleted files: update interactions
     for (path, _node_ids) in deleted_files {
-        let file_info = repo
-            .file_system
-            .files
-            .entry(path)
-            .or_insert_with(|| FileInfo {
-                creator: String::new(),
-                interactions: HashMap::new(),
-                ownership_score: HashMap::new(),
-                commit_time: Vec::new(),
-            });
-
-        *file_info
-            .interactions
-            .entry(author_id.to_string())
-            .or_insert(0) += 1;
-        file_info.commit_time.push(commit_timestamp);
+        update_file_interaction(repo, path, &author_id, commit_timestamp, false);
     }
 
     // For modified files: update interactions
     for (path, _node_id) in modified_files {
-        let file_info = repo
-            .file_system
-            .files
-            .entry(path)
-            .or_insert_with(|| FileInfo {
-                creator: String::new(),
-                interactions: HashMap::new(),
-                ownership_score: HashMap::new(),
-                commit_time: Vec::new(),
-            });
-
-        *file_info
-            .interactions
-            .entry(author_id.to_string())
-            .or_insert(0) += 1;
-        file_info.commit_time.push(commit_timestamp);
+        update_file_interaction(repo, path, &author_id, commit_timestamp, false);
     }
 
     // For renamed files: update interactions
     for (path, _node_id) in renamed_files {
-        let file_info = repo
-            .file_system
-            .files
-            .entry(path)
-            .or_insert_with(|| FileInfo {
-                creator: String::new(),
-                interactions: HashMap::new(),
-                ownership_score: HashMap::new(),
-                commit_time: Vec::new(),
-            });
-
-        *file_info
-            .interactions
-            .entry(author_id.to_string())
-            .or_insert(0) += 1;
-        file_info.commit_time.push(commit_timestamp);
+        update_file_interaction(repo, path, &author_id, commit_timestamp, false);
     }
 }
