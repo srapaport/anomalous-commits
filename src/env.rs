@@ -37,12 +37,13 @@ pub enum PersonType {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PersonRecord {
     pub person_type: PersonType,
-    pub nom: Option<String>,
+    pub name: Option<String>,
     pub email: Option<String>,
     pub number_of_commits: usize,
     pub number_of_self_commits: usize,
     pub time_since_first_commit: i64,
     pub commits: Vec<(String, i64, i16)>,
+    pub extensions: HashMap<String, usize>, // <extension, #interactions>
 }
 
 pub type Authors = CHashMap<String, AuthorInfo>;
@@ -134,12 +135,13 @@ impl RepositoryStats {
             })
             .or_insert_with(|| PersonRecord {
                 person_type: person_type,
-                nom: None,
+                name: None,
                 email: None,
                 number_of_commits: 1,
                 number_of_self_commits: { if self_committed { 1 } else { 0 } },
                 time_since_first_commit: get_now_timestamp() - date,
                 commits: vec![(commit.to_owned(), date, tz)],
+                extensions: HashMap::new(),
             });
     }
 

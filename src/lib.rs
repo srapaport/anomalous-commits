@@ -11,11 +11,10 @@ use orc_rust::ArrowReaderBuilder;
 use rayon::prelude::*;
 use rocksdb::{DB, Options};
 use std::{
-    fs::File,
-    sync::{
+    collections::HashMap, fs::File, sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
-    },
+    }
 };
 use swh_graph::NodeType;
 use swh_graph::graph::SwhFullGraph;
@@ -42,12 +41,13 @@ pub fn flush_to_rocksdb(
     for (author_id, author_info) in authors.into_iter() {
         let person_record = env::PersonRecord {
             person_type: env::PersonType::Author,
-            nom: author_info.nom,
+            name: author_info.nom,
             email: author_info.email,
             number_of_commits: author_info.number_of_commits,
             number_of_self_commits: author_info.number_of_self_commits,
             time_since_first_commit: author_info.time_since_first_commit,
             commits: author_info.commits,
+            extensions: HashMap::new(),
         };
 
         let value = serde_json::to_vec(&person_record).expect("Failed to serialize author info");
@@ -60,12 +60,13 @@ pub fn flush_to_rocksdb(
     for (committer_id, committer_info) in committers.into_iter() {
         let person_record = env::PersonRecord {
             person_type: env::PersonType::Committer,
-            nom: committer_info.nom,
+            name: committer_info.nom,
             email: committer_info.email,
             number_of_commits: committer_info.number_of_commits,
             number_of_self_commits: committer_info.number_of_self_commits,
             time_since_first_commit: committer_info.time_since_first_commit,
             commits: committer_info.commits,
+            extensions: HashMap::new(),
         };
 
         let value = serde_json::to_vec(&person_record).expect("Failed to serialize committer info");
