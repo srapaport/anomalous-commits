@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use anyhow::{Result, anyhow};
 use swh_graph::NodeType;
 use swh_graph::graph::*;
 use swh_graph::labels::{EdgeLabel, VisitStatus};
@@ -160,8 +161,24 @@ pub fn update_contributors<G: SwhFullGraph>(
     repo.update_contributors(committer_id, &commit_hash, cdate, ctz, self_committed);
 }
 
+pub fn compute_ownership_score(repo: &mut env::RepositoryStats) -> Result<()> {
+    for file in repo.file_system.files.values_mut() {
+        let total_interactions: usize = file.interactions.values().sum();
+        if total_interactions < 1 {
+            return Err(anyhow!("Amount of interactions nil yet the file exists"));
+        }
+        for (author, amount_of_interactions) in file.interactions.iter() {
+            file.ownership_score.insert(
+                author.to_owned(),
+                (*amount_of_interactions as f64 / total_interactions as f64) * 100.0,
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Print error statistics
-fn _print_error_stats() {
+pub fn print_error_stats() {
     let author_id_fails = AUTHOR_ID_FAILURES.load(Ordering::Relaxed);
     let committer_id_fails = COMMITTER_ID_FAILURES.load(Ordering::Relaxed);
     let author_ts_fails = AUTHOR_TIMESTAMP_FAILURES.load(Ordering::Relaxed);
@@ -181,6 +198,7 @@ fn _print_error_stats() {
     let author_ts_fails_diff = diff::AUTHOR_TIMESTAMP_FAILURES.load(Ordering::Relaxed);
     let root_dir_err = diff::ROOT_DIR_ERR.load(Ordering::Relaxed);
     let path_name_err = diff::NAME_UTF8_ERR.load(Ordering::Relaxed);
+    let tree_diff_err = diff::TREE_DIFF_ERR.load(Ordering::Relaxed);
 
     println!("\n=== Diff Error Statistics ===");
     println!("Author ID failures in diff: {}", author_id_fails_diff);
@@ -190,4 +208,5 @@ fn _print_error_stats() {
     );
     println!("Root directory errors in diff: {}", root_dir_err);
     println!("Path name UTF-8 errors in diff: {}", path_name_err);
+    println!("Tree diff computation errors: {}", tree_diff_err);
 }

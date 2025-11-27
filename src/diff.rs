@@ -1,14 +1,16 @@
 use crate::env::{FileInfo, RepositoryStats};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{HashMap, HashSet},
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swh_graph::{NodeType, graph::SwhFullGraph, labels::EdgeLabel};
+use swh_graph_stdlib::diff::{TreeDiffOperation, tree_diff_dirs};
 
 pub static ROOT_DIR_ERR: AtomicUsize = AtomicUsize::new(0);
 pub static NAME_UTF8_ERR: AtomicUsize = AtomicUsize::new(0);
 pub static AUTHOR_ID_FAILURES: AtomicUsize = AtomicUsize::new(0);
 pub static AUTHOR_TIMESTAMP_FAILURES: AtomicUsize = AtomicUsize::new(0);
+pub static TREE_DIFF_ERR: AtomicUsize = AtomicUsize::new(0);
 
 pub fn compute_diff<G: SwhFullGraph>(
     commit: usize,
@@ -42,23 +44,20 @@ pub fn compute_diff<G: SwhFullGraph>(
         return;
     };
 
-    let (stats, final_added, deleted_files, modified_files, parent_files) =
+    let (stats, final_added, deleted_files, modified_files, renamed_files) =
         compute_diff_stats(commit_root_dir, &parent_root_dirs, graph);
 
     // Initialize files from parent trees if not already present
-    for (path, _) in parent_files {
-        repo.file_system
-            .files
-            .entry(path.clone())
-            .or_insert_with(|| {
-                FileInfo {
-                    creator: String::new(), // Will be set when file is added
-                    interactions: HashMap::new(),
-                    ownership_score: HashMap::new(),
-                    commit_time: Vec::new(),
-                }
-            });
-    }
+    // for (path, _) in parent_files {
+    //     repo.file_system.files.entry(path).or_insert_with(|| {
+    //         FileInfo {
+    //             creator: String::new(), // Will be set when file is added
+    //             interactions: HashMap::new(),
+    //             ownership_score: HashMap::new(),
+    //             commit_time: Vec::new(),
+    //         }
+    //     });
+    // }
 
     // Update FileSystem with the diff results
     update_file_system(
@@ -69,6 +68,7 @@ pub fn compute_diff<G: SwhFullGraph>(
         final_added,
         deleted_files,
         modified_files,
+        renamed_files,
     );
 }
 
@@ -96,151 +96,265 @@ pub fn compute_diff_stats<G: SwhFullGraph>(
 ) -> (
     DiffStats,
     HashMap<String, usize>,
-    HashMap<String, BTreeSet<usize>>,
-    Vec<String>,
-    HashMap<String, BTreeSet<usize>>,
+    HashMap<String, HashSet<usize>>,
+    HashMap<String, usize>,
+    HashMap<String, (String, usize)>,
+    // HashMap<String, HashSet<usize>>,
 ) {
-    // Build union of all parent trees: path -> set of node IDs (content hashes)
-    // Also track parent directories for optimization
-    let (parent_files, parent_dirs) = get_commit_trees(parent_root_dirs, graph);
+    // Initialize aggregated diff results
+    let mut all_added: HashMap<String, usize> = HashMap::new();
 
-    // Track changes while traversing commit tree
-    let mut added_files: HashMap<String, usize> = HashMap::new();
-    let mut modified_files: Vec<String> = Vec::new();
-    let mut deleted_files = parent_files.clone();
+    // Handle case with no parents (initial commit)
+    if parent_root_dirs.is_empty() {
+        // For initial commits, all files in the tree are added
+        all_added = collect_all_files_in_tree(commit_root_dir, graph);
+        return (
+            DiffStats {
+                added: all_added.len(),
+                deleted: 0,
+                modified: 0,
+                renamed: 0,
+            },
+            all_added,
+            HashMap::with_capacity(0),
+            HashMap::with_capacity(0),
+            HashMap::with_capacity(0),
+            // HashMap::with_capacity(0),
+        );
+    }
 
-    // Traverse commit tree and compare on-the-fly
-    traverse_and_compare(
-        commit_root_dir,
-        graph,
-        &parent_files,
-        &parent_dirs,
-        &mut deleted_files,
-        &mut added_files,
-        &mut modified_files,
-    );
+    let mut all_deleted: HashMap<String, HashSet<usize>> = HashMap::new();
+    let mut all_modified: HashMap<String, usize> = HashMap::new(); // path -> new_file content
+    let mut all_renamed: HashMap<String, (String, usize)> = HashMap::new();
+    // let mut parent_files: HashMap<String, HashSet<usize>> = HashMap::new();
+
+    // For merge handling: use hybrid approach with enum for zero-cost non-merge case
+    #[derive(Default)]
+    struct MergeComparison {
+        all_added: HashMap<String, usize>,
+        all_deleted: HashMap<String, HashSet<usize>>,
+        all_modified: HashMap<String, usize>,
+    }
+
+    enum MergeTracking {
+        None,
+        Active(HashMap<usize, MergeComparison>),
+    }
+
+    let mut merge_tracking = if parent_root_dirs.len() > 1 {
+        MergeTracking::Active(HashMap::new())
+    } else {
+        MergeTracking::None
+    };
+    // let mut parent_file_contents: HashMap<String, BTreeSet<usize>> = if is_merge {
+    //     HashMap::new()
+    // } else {
+    //     HashMap::with_capacity(0)
+    // };
+    // let mut paths_absent_in_parents: HashSet<String> = if is_merge {
+    //     HashSet::new()
+    // } else {
+    //     HashSet::with_capacity(0)
+    // };
+
+    // Compute diff against each parent and aggregate results
+    for &parent_root_dir in parent_root_dirs {
+        match tree_diff_dirs(graph, parent_root_dir, commit_root_dir, None) {
+            Ok(diff) => {
+                for op in diff.operations() {
+                    match op {
+                        TreeDiffOperation::Added { path, new_file, .. } => {
+                            let path_str = convert_path_to_string(path.as_ref(), graph);
+                            // Track as potentially added (will filter later for merges)
+                            all_added.entry(path_str.clone()).or_insert(new_file);
+                            // This path didn't exist in this parent (only track for merges)
+                            if let MergeTracking::Active(ref mut merge_comparison) = merge_tracking
+                            {
+                                merge_comparison
+                                    .entry(parent_root_dir)
+                                    .or_default()
+                                    .all_added
+                                    .entry(path_str.clone())
+                                    .or_insert(new_file);
+                            }
+                        }
+                        TreeDiffOperation::Deleted { path, old_file, .. } => {
+                            let path_str = convert_path_to_string(path.as_ref(), graph);
+                            // Track in all_deleted and parent_files
+                            all_deleted
+                                .entry(path_str.clone())
+                                .or_insert_with(HashSet::new)
+                                .insert(old_file);
+                            // parent_files
+                            //     .entry(path_str.clone())
+                            //     .or_insert_with(HashSet::new)
+                            //     .insert(old_file);
+                            // Track this file's content exists in this parent (only for merges)
+                            if let MergeTracking::Active(ref mut merge_comparison) = merge_tracking
+                            {
+                                merge_comparison
+                                    .entry(parent_root_dir)
+                                    .or_default()
+                                    .all_deleted
+                                    .entry(path_str.clone())
+                                    .or_insert_with(HashSet::new)
+                                    .insert(old_file);
+                            }
+                        }
+                        TreeDiffOperation::Modified {
+                            path,
+                            old_file: _old_file,
+                            new_file,
+                            ..
+                        } => {
+                            let path_str = convert_path_to_string(path.as_ref(), graph);
+                            // Track the new content for this path
+                            all_modified.entry(path_str.clone()).or_insert(new_file);
+                            // Track in parent_files
+                            // parent_files
+                            //     .entry(path_str.clone())
+                            //     .or_insert_with(HashSet::new)
+                            //     .insert(old_file);
+                            // Track the OLD content in this parent (only for merges)
+                            if let MergeTracking::Active(ref mut merge_comparison) = merge_tracking
+                            {
+                                merge_comparison
+                                    .entry(parent_root_dir)
+                                    .or_default()
+                                    .all_modified
+                                    .entry(path_str.clone())
+                                    .or_insert(new_file);
+                            }
+                        }
+                        TreeDiffOperation::Moved { .. } => {
+                            // Moved variant is never returned according to docs
+                            // but we need to handle it for exhaustiveness
+                        }
+                    }
+                }
+            }
+            Err(_e) => {
+                // Failed to compute diff for this parent, skip it
+                TREE_DIFF_ERR.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+        }
+    }
+
+    // For merges: filter operations that are just choosing one parent's version
+    if let MergeTracking::Active(merge_comparison) = merge_tracking {
+        // Keep in all_added only paths that are present in ALL parents' all_added
+        all_added.retain(|path, _| {
+            merge_comparison
+                .values()
+                .all(|parent_cmp| parent_cmp.all_added.contains_key(path))
+        });
+
+        // Keep in all_deleted only paths that are present in ALL parents' all_deleted
+        all_deleted.retain(|path, _| {
+            merge_comparison
+                .values()
+                .all(|parent_cmp| parent_cmp.all_deleted.contains_key(path))
+        });
+
+        // Keep in all_modified only paths that are present in ALL parents' all_added, all_deleted or all_modified
+        all_modified.retain(|path, _| {
+            merge_comparison.values().all(|parent_cmp| {
+                parent_cmp.all_added.contains_key(path)
+                    || parent_cmp.all_deleted.contains_key(path)
+                    || parent_cmp.all_modified.contains_key(path)
+            })
+        });
+    }
 
     // Detect renames: same content hash (node ID), different path
-    let mut renamed_count = 0;
-    let deleted_hashes: HashMap<usize, BTreeSet<String>> = {
+    let deleted_hashes: HashMap<usize, HashSet<String>> = {
         let mut map = HashMap::new();
-        for (path, node_ids) in &deleted_files {
+        for (path, node_ids) in &all_deleted {
             for node_id in node_ids {
                 map.entry(*node_id)
-                    .or_insert_with(BTreeSet::new)
+                    .or_insert_with(HashSet::new)
                     .insert(path.clone());
             }
         }
         map
     };
 
-    let mut final_added = added_files.clone();
-    for (added_path, added_node_id) in added_files.into_iter() {
+    // Detect renames by checking if added files were deleted elsewhere
+    let mut final_added = HashMap::with_capacity(all_added.len());
+    for (added_path, added_node_id) in all_added {
         if let Some(deleted_paths) = deleted_hashes.get(&added_node_id) {
             // Same content, different path = rename
-            renamed_count += 1;
-            final_added.remove(&added_path);
-            // Remove one instance of this hash from deleted
+            // Remove this specific node_id from the deleted set
             if let Some(path_to_remove) = deleted_paths.iter().next() {
-                deleted_files.remove(path_to_remove);
+                if let Some(node_set) = all_deleted.get_mut(path_to_remove) {
+                    node_set.remove(&added_node_id);
+                    // If the set is now empty, remove the path entirely
+                    if node_set.is_empty() {
+                        all_deleted.remove(path_to_remove);
+                    }
+                }
+                // Track new_path -> (old_path, node_id)
+                all_renamed.insert(added_path, (path_to_remove.clone(), added_node_id));
             }
+        } else {
+            // Not a rename, it's a true addition
+            final_added.insert(added_path, added_node_id);
         }
     }
 
     let stats = DiffStats {
         added: final_added.len(),
-        deleted: deleted_files.len(),
-        modified: modified_files.len(),
-        renamed: renamed_count,
+        deleted: all_deleted.len(),
+        modified: all_modified.len(),
+        renamed: all_renamed.len(),
     };
 
     (
         stats,
         final_added,
-        deleted_files,
-        modified_files,
-        parent_files,
+        all_deleted,
+        all_modified,
+        all_renamed,
+        // parent_files,
     )
 }
 
-fn update_file_system(
-    repo: &mut RepositoryStats,
-    author_id: String,
-    commit_timestamp: i64,
-    stats: DiffStats,
-    final_added: HashMap<String, usize>,
-    deleted_files: HashMap<String, BTreeSet<usize>>,
-    modified_files: Vec<String>,
-) {
-    // Update global counters
-    repo.file_system.files_added += stats.added;
-    repo.file_system.files_modified += stats.modified;
-    repo.file_system.files_removed += stats.deleted;
-    repo.file_system.files_renamed += stats.renamed;
-
-    // For added files: set creator and update interactions
-    for (path, _node_id) in final_added {
-        let file_info = repo
-            .file_system
-            .files
-            .entry(path)
-            .or_insert_with(|| FileInfo {
-                creator: author_id.to_string(),
-                interactions: HashMap::new(),
-                ownership_score: HashMap::new(),
-                commit_time: Vec::new(),
-            });
-
-        // If file already exists (shouldn't happen for added files), update creator if empty
-        if file_info.creator.is_empty() {
-            file_info.creator = author_id.to_string();
+/// Convert a path represented as LabelNameId slice to a String path
+fn convert_path_to_string<G: SwhFullGraph>(
+    path: &[swh_graph::labels::LabelNameId],
+    graph: &G,
+) -> String {
+    let mut result = String::new();
+    for (i, label_id) in path.iter().enumerate() {
+        if i > 0 {
+            result.push('/');
         }
-
-        // Update interactions
-        *file_info
-            .interactions
-            .entry(author_id.to_string())
-            .or_insert(0) += 1;
-        file_info.commit_time.push(commit_timestamp);
-    }
-
-    // For deleted files: update interactions
-    for (path, _node_ids) in deleted_files {
-        if let Some(file_info) = repo.file_system.files.get_mut(&path) {
-            *file_info
-                .interactions
-                .entry(author_id.to_string())
-                .or_insert(0) += 1;
-            file_info.commit_time.push(commit_timestamp);
+        match String::from_utf8(graph.properties().label_name(*label_id)) {
+            Ok(name) => result.push_str(&name),
+            Err(_) => {
+                NAME_UTF8_ERR.fetch_add(1, Ordering::Relaxed);
+                result.push_str("<invalid-utf8>");
+            }
         }
     }
-
-    // For modified files: update interactions
-    for path in modified_files {
-        if let Some(file_info) = repo.file_system.files.get_mut(&path) {
-            *file_info
-                .interactions
-                .entry(author_id.to_string())
-                .or_insert(0) += 1;
-            file_info.commit_time.push(commit_timestamp);
-        }
+    if result.is_empty() {
+        result.push('.');
     }
+    result
 }
 
-fn traverse_and_compare<G: SwhFullGraph>(
+/// Collect all files in a directory tree (used for initial commits)
+fn collect_all_files_in_tree<G: SwhFullGraph>(
     root_dir: usize,
     graph: &G,
-    parent_files: &HashMap<String, BTreeSet<usize>>,
-    parent_dirs: &HashMap<String, BTreeSet<usize>>,
-    deleted_files: &mut HashMap<String, BTreeSet<usize>>,
-    added_files: &mut HashMap<String, usize>,
-    modified_files: &mut Vec<String>,
-) {
+) -> HashMap<String, usize> {
+    let mut files = HashMap::new();
     let mut path_node: HashMap<usize, String> = HashMap::new();
     path_node.insert(root_dir, ".".to_string());
 
     let mut to_visit = vec![root_dir];
-    let mut visited = BTreeSet::new();
+    let mut visited = HashSet::new();
 
     while let Some(node) = to_visit.pop() {
         if visited.contains(&node) {
@@ -276,42 +390,9 @@ fn traverse_and_compare<G: SwhFullGraph>(
 
                 match graph.properties().node_type(succ) {
                     NodeType::Content => {
-                        // Node ID is the content hash
-                        let node_id = succ;
-
-                        // Compare with parent union on-the-fly
-                        if let Some(parent_node_ids) = parent_files.get(&path) {
-                            // File exists in parent(s)
-                            if !parent_node_ids.contains(&node_id) {
-                                // Node ID changed = modified
-                                modified_files.push(path.clone());
-                            }
-                            // Remove from deleted (it exists in commit)
-                            deleted_files.remove(&path);
-                        } else {
-                            // File doesn't exist in any parent = added (or renamed)
-                            added_files.insert(path, node_id);
-                        }
+                        files.insert(path, succ);
                     }
                     NodeType::Directory => {
-                        // Check if this directory exists in parent with same node ID
-                        if let Some(parent_dir_ids) = parent_dirs.get(&path) {
-                            if parent_dir_ids.contains(&succ) {
-                                // Directory unchanged - skip entire subtree!
-                                // Remove all files under this path from deleted_files
-                                let prefix = if path == "." {
-                                    String::new()
-                                } else {
-                                    format!("{}/", path)
-                                };
-                                deleted_files.retain(|file_path, _| {
-                                    !file_path.starts_with(&prefix) && file_path != &path
-                                });
-                                continue; // Skip adding to to_visit
-                            }
-                        }
-
-                        // Directory changed or new - traverse it
                         path_node.insert(succ, path);
                         if !visited.contains(&succ) {
                             to_visit.push(succ);
@@ -322,73 +403,108 @@ fn traverse_and_compare<G: SwhFullGraph>(
             }
         }
     }
+    files
 }
 
-fn get_commit_trees<G: SwhFullGraph>(
-    root_dirs: &[usize],
-    graph: &G,
-) -> (
-    HashMap<String, BTreeSet<usize>>,
-    HashMap<String, BTreeSet<usize>>,
+fn update_file_system(
+    repo: &mut RepositoryStats,
+    author_id: String,
+    commit_timestamp: i64,
+    stats: DiffStats,
+    final_added: HashMap<String, usize>,
+    deleted_files: HashMap<String, HashSet<usize>>,
+    modified_files: HashMap<String, usize>,
+    renamed_files: HashMap<String, (String, usize)>,
 ) {
-    let mut files: HashMap<String, BTreeSet<usize>> = HashMap::new();
-    let mut dirs: HashMap<String, BTreeSet<usize>> = HashMap::new();
+    // Update global counters
+    repo.file_system.files_added += stats.added;
+    repo.file_system.files_modified += stats.modified;
+    repo.file_system.files_removed += stats.deleted;
+    repo.file_system.files_renamed += stats.renamed;
 
-    for &root_dir in root_dirs {
-        let mut path_node: HashMap<usize, String> = HashMap::new();
-        path_node.insert(root_dir, ".".to_string());
+    // For added files: set creator and update interactions
+    for (path, _node_id) in final_added {
+        let file_info = repo
+            .file_system
+            .files
+            .entry(path)
+            .or_insert_with(|| FileInfo {
+                creator: author_id.to_string(),
+                interactions: HashMap::new(),
+                ownership_score: HashMap::new(),
+                commit_time: Vec::new(),
+            });
 
-        let mut to_visit = vec![root_dir];
-        let mut visited = BTreeSet::new();
-
-        while let Some(node) = to_visit.pop() {
-            if visited.contains(&node) {
-                continue;
-            }
-            visited.insert(node);
-            let current_path = path_node
-                .get(&node)
-                .expect("couldn't find path in path_node")
-                .clone();
-            for (succ, labels) in graph.labeled_successors(node) {
-                for label in labels {
-                    let name = if let EdgeLabel::DirEntry(dir_entry) = label {
-                        if let Ok(name) = String::from_utf8(
-                            graph.properties().label_name(dir_entry.label_name_id()),
-                        ) {
-                            name
-                        } else {
-                            NAME_UTF8_ERR.fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    };
-                    let path = if current_path == "." {
-                        name
-                    } else {
-                        format!("{}/{}", current_path, name)
-                    };
-                    match graph.properties().node_type(succ) {
-                        NodeType::Content => {
-                            // Store path -> node ID (content hash)
-                            files.entry(path).or_insert_with(BTreeSet::new).insert(succ);
-                        }
-                        NodeType::Directory => {
-                            // Store directory path -> node ID
-                            dirs.entry(path.clone())
-                                .or_insert_with(BTreeSet::new)
-                                .insert(succ);
-                            path_node.insert(succ, path);
-                            if !visited.contains(&succ) {
-                                to_visit.push(succ);
-                            }
-                        }
-                        _ => continue,
-                    }
-                }
-            }
+        // If file already exists (shouldn't happen for added files), update creator if empty
+        if file_info.creator.is_empty() {
+            file_info.creator = author_id.to_string();
         }
+
+        // Update interactions
+        *file_info
+            .interactions
+            .entry(author_id.to_string())
+            .or_insert(0) += 1;
+        file_info.commit_time.push(commit_timestamp);
     }
-    (files, dirs)
+
+    // For deleted files: update interactions
+    for (path, _node_ids) in deleted_files {
+        let file_info = repo
+            .file_system
+            .files
+            .entry(path)
+            .or_insert_with(|| FileInfo {
+                creator: String::new(),
+                interactions: HashMap::new(),
+                ownership_score: HashMap::new(),
+                commit_time: Vec::new(),
+            });
+
+        *file_info
+            .interactions
+            .entry(author_id.to_string())
+            .or_insert(0) += 1;
+        file_info.commit_time.push(commit_timestamp);
+    }
+
+    // For modified files: update interactions
+    for (path, _node_id) in modified_files {
+        let file_info = repo
+            .file_system
+            .files
+            .entry(path)
+            .or_insert_with(|| FileInfo {
+                creator: String::new(),
+                interactions: HashMap::new(),
+                ownership_score: HashMap::new(),
+                commit_time: Vec::new(),
+            });
+
+        *file_info
+            .interactions
+            .entry(author_id.to_string())
+            .or_insert(0) += 1;
+        file_info.commit_time.push(commit_timestamp);
+    }
+
+    // For renamed files: update interactions
+    for (path, _node_id) in renamed_files {
+        let file_info = repo
+            .file_system
+            .files
+            .entry(path)
+            .or_insert_with(|| FileInfo {
+                creator: String::new(),
+                interactions: HashMap::new(),
+                ownership_score: HashMap::new(),
+                commit_time: Vec::new(),
+            });
+
+        *file_info
+            .interactions
+            .entry(author_id.to_string())
+            .or_insert(0) += 1;
+        file_info.commit_time.push(commit_timestamp);
+    }
 }

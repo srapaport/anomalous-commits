@@ -424,6 +424,7 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
             bar.inc(1);
             let start = std::time::Instant::now();
             let mut repo = outliers::process_snapshot(latest_snapshot, graph);
+            outliers::compute_ownership_score(&mut repo).unwrap();
             info!(
                 "origin: {} | with: {} commits | took {:?}",
                 &url_string,
@@ -444,6 +445,7 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
             }
         });
     print_error_stats();
+    outliers::print_error_stats();
     // Explicitly flush at the end
     db.lock().unwrap().flush()?;
     Ok(())
