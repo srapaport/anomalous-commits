@@ -11,7 +11,7 @@ use swh_graph::NodeType;
 use swh_graph::graph::*;
 use swh_graph::mph::DynMphf;
 
-fn date_to_timestamp(year: i32, month: u32, day: u32) -> i64 {
+fn _date_to_timestamp(year: i32, month: u32, day: u32) -> i64 {
     use chrono::{NaiveDate, TimeZone, Utc};
     let naive_date = NaiveDate::from_ymd_opt(year, month, day).expect("Invalid date");
     Utc.from_utc_datetime(&naive_date.and_hms_opt(0, 0, 0).unwrap())
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn find_sus<G: SwhFullGraph>(url: &str, sus_commits: &[&str], graph: &G) -> Result<()> {
+fn _find_sus<G: SwhFullGraph>(url: &str, sus_commits: &[&str], graph: &G) -> Result<()> {
     let swhid_url = swh_graph::SWHID::from_origin_url(url);
     let node_url = graph.properties().node_id(swhid_url)?;
     // let snapshot = anomalous_commits::outliers::retrieve_latest_snapshots(node_url, graph)

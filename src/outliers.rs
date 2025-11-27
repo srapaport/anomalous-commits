@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use swh_graph::NodeType;
@@ -60,7 +60,7 @@ pub fn retrieve_latest_snapshot<G: SwhFullGraph>(origin: usize, graph: &G) -> Op
 pub fn process_snapshot<G: SwhFullGraph>(snapshot: usize, graph: &G) -> env::RepositoryStats {
     let props = graph.properties();
     let mut repo = env::RepositoryStats::new();
-    let mut visited = BTreeSet::new();
+    let mut visited = HashSet::new();
     for succ in graph.successors(snapshot) {
         // We only look at commits, we skip releases
         // We don't retrieve the information on branch name so far
@@ -75,7 +75,7 @@ pub fn process_snapshot<G: SwhFullGraph>(snapshot: usize, graph: &G) -> env::Rep
 fn process_revision<G: SwhFullGraph>(
     commit: usize,
     repo: &mut env::RepositoryStats,
-    visited: &mut BTreeSet<usize>,
+    visited: &mut HashSet<usize>,
     graph: &G,
 ) {
     let mut stack = vec![commit];
@@ -108,7 +108,11 @@ fn process_revision<G: SwhFullGraph>(
     }
 }
 
-pub fn update_contributors<G: SwhFullGraph>(commit: usize, repo: &mut env::RepositoryStats, graph: &G) {
+pub fn update_contributors<G: SwhFullGraph>(
+    commit: usize,
+    repo: &mut env::RepositoryStats,
+    graph: &G,
+) {
     let props = graph.properties();
 
     // Defensive programming: handle potential failures
@@ -157,7 +161,7 @@ pub fn update_contributors<G: SwhFullGraph>(commit: usize, repo: &mut env::Repos
 }
 
 /// Print error statistics
-pub fn print_error_stats() {
+fn _print_error_stats() {
     let author_id_fails = AUTHOR_ID_FAILURES.load(Ordering::Relaxed);
     let committer_id_fails = COMMITTER_ID_FAILURES.load(Ordering::Relaxed);
     let author_ts_fails = AUTHOR_TIMESTAMP_FAILURES.load(Ordering::Relaxed);
