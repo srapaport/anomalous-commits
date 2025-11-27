@@ -161,6 +161,9 @@ pub fn compute_diff_stats<G: SwhFullGraph>(
     for &parent_root_dir in parent_root_dirs {
         match tree_diff_dirs(graph, parent_root_dir, commit_root_dir, None) {
             Ok(diff) => {
+                if let MergeTracking::Active(ref mut merge_comparison) = merge_tracking {
+                    merge_comparison.insert(parent_root_dir, MergeComparison::default());
+                }
                 for op in diff.operations() {
                     match op {
                         TreeDiffOperation::Added { path, new_file, .. } => {
