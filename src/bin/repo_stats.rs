@@ -33,6 +33,5 @@ fn main() -> Result<()> {
 
     let db_path = "data/RepositoryStats.db";
     anomalous_commits::build_repo_stats(&graph, db_path)?;
-    todo!("handle init commit that doesn't have parents for \"creator\"");
     Ok(())
 }
