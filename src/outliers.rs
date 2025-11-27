@@ -173,6 +173,7 @@ pub fn compute_ownership_score(repo: &mut env::RepositoryStats) -> Result<()> {
                 (*amount_of_interactions as f64 / total_interactions as f64) * 100.0,
             );
         }
+        file.commit_time.sort_unstable();
     }
     Ok(())
 }
