@@ -1,11 +1,13 @@
+use anyhow::Result;
 use dotenvy::dotenv;
 use flexi_logger::{Cleanup, Criterion, Duplicate, Logger, Naming};
 use log::LevelFilter;
 use std::env;
 
-fn main() {
+fn main() -> Result<()> {
     dotenv().ok();
-    let dir_orc = env::var("ORC_PATH").expect("ORC_PATH not set");
+    // let dir_orc = env::var("ORC_PATH").expect("ORC_PATH not set");
+    let graph_basename = env::var("GRAPH_BASENAME").expect("GRAPH_BASENAME not set");
     Logger::with(LevelFilter::Info)
         .log_to_file(
             flexi_logger::FileSpec::default()
@@ -24,5 +26,7 @@ fn main() {
         .start()
         .unwrap();
 
-    anomalous_commits::extract_author_commits(dir_orc);
+    let data_path = "data/test.db";
+    anomalous_commits::extract_author_commits_graph(&graph_basename, data_path)?;
+    Ok(())
 }
