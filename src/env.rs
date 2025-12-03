@@ -51,7 +51,7 @@ pub struct CommitterInfo {
 }
 
 /// Enum to differentiate between Author and Committer
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum PersonType {
     Author,
@@ -76,7 +76,7 @@ pub type Committers = CHashMap<String, CommitterInfo>;
 pub type Contributors = HashMap<String, PersonRecord>; // key: "author:hash_hexa" or "committer:hash_hexa"
 
 pub static NOW: OnceLock<i64> = OnceLock::new();
-fn get_now_timestamp() -> i64 {
+pub fn get_now_timestamp() -> i64 {
     *NOW.get_or_init(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -116,7 +116,7 @@ impl FileSystem {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RepositoryStats {
-    pub unique_file_type_interaction: HashMap<String, usize>, // Counter <.extension, #interactions>
+    pub file_type_interaction: HashMap<String, usize>, // Counter <.extension, #interactions>
     pub contributors: Contributors,
     pub commit_time: Vec<i64>,
     pub file_system: FileSystem,
@@ -125,7 +125,7 @@ pub struct RepositoryStats {
 impl RepositoryStats {
     pub fn new() -> RepositoryStats {
         RepositoryStats {
-            unique_file_type_interaction: HashMap::new(),
+            file_type_interaction: HashMap::new(),
             contributors: Contributors::new(),
             commit_time: Vec::new(),
             file_system: FileSystem::new(),
