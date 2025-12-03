@@ -456,6 +456,10 @@ fn update_file_interaction(
         .get_mut(author_id)
         .unwrap()
         .extensions
+        .entry(extension.clone())
+        .and_modify(|count| *count += 1)
+        .or_insert(1);
+    repo.file_type_interaction
         .entry(extension)
         .and_modify(|count| *count += 1)
         .or_insert(1);
