@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::str::FromStr;
@@ -51,15 +51,17 @@ fn _find_sus<G: SwhFullGraph>(url: &str, sus_commits: &[&str], graph: &G) -> Res
     let sus_nodes = sus_commits
         .iter()
         .filter_map(|commit| {
-            let swhid = swh_graph::SWHID::from_str(*commit).and_then(|swhid|{
-                println!("sus commit is in the graph");
-                Ok(swhid)
-            }).ok()?;
+            let swhid = swh_graph::SWHID::from_str(*commit)
+                .and_then(|swhid| {
+                    println!("sus commit is in the graph");
+                    Ok(swhid)
+                })
+                .ok()?;
             graph.properties().node_id(swhid).ok()
         })
         .collect::<Vec<usize>>();
 
-    let mut visited = BTreeSet::new();
+    let mut visited = HashSet::new();
     let mut to_visit = vec![node_url];
     while let Some(visiting) = to_visit.pop() {
         if visited.contains(&visiting) {
@@ -119,7 +121,7 @@ fn process_snapshot<G: SwhFullGraph>(
 ) -> anomalous_commits::env::RepositoryStats {
     let props = graph.properties();
     let mut repo = anomalous_commits::env::RepositoryStats::new();
-    let mut visited = BTreeSet::new();
+    let mut visited = HashSet::new();
     let bar = ProgressBar::new(0);
     bar.set_style(ProgressStyle::with_template("{msg} {pos} {elapsed_precise}").unwrap());
     bar.set_message("building repo stats");
@@ -138,7 +140,7 @@ fn process_snapshot<G: SwhFullGraph>(
 fn process_revision<G: SwhFullGraph>(
     commit: usize,
     repo: &mut anomalous_commits::env::RepositoryStats,
-    visited: &mut BTreeSet<usize>,
+    visited: &mut HashSet<usize>,
     graph: &G,
     bar: &ProgressBar,
     timestamp_limit: Option<i64>,
