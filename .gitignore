@@ -8,3 +8,5 @@ data
 *.csv
 *.json
 log*
+*.txt
+RESEARCH_TODO.md
