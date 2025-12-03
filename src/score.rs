@@ -1,3 +1,5 @@
+use anyhow::Result;
+use rocksdb::{DB, IteratorMode, Options};
 use std::collections::{HashMap, HashSet};
 use swh_graph::NodeType;
 use swh_graph::graph::SwhFullGraph;
@@ -27,6 +29,8 @@ pub struct AnomalyScore {
     pub number_commits_committer: f64,
     pub newcomer_author: f64,
     pub newcomer_committer: f64,
+    pub account_age_author: f64,
+    pub account_age_committer: f64,
     pub repository_dormancy: f64,
     pub sensitive_file: f64,
     pub prebuilt_file: f64,
@@ -105,6 +109,127 @@ pub struct RepoStatistics {
     q1_q2_commits_per_committer: (f64, f64),
     q1_q2_time_since_first_commit_author: (f64, f64),
     q1_q2_time_since_first_commit_committer: (f64, f64),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GlobalStatistics {
+    pub q1_q2_account_age_author: (f64, f64),
+    pub q1_q2_account_age_committer: (f64, f64),
+}
+
+/// Compute global account age statistics from a RocksDB database containing PersonRecords
+/// Returns Q1 and Q2 (25th and 50th percentiles) for both authors and committers
+pub fn compute_global_account_age_statistics(db_path: &str) -> Result<GlobalStatistics> {
+    let mut opts = Options::default();
+    opts.create_if_missing(false);
+    let db = DB::open_for_read_only(&opts, db_path, false)?;
+
+    let mut author_ages: Vec<i64> = Vec::new();
+    let mut committer_ages: Vec<i64> = Vec::new();
+
+    let now = env::get_now_timestamp();
+
+    // Iterate through all entries in the database
+    let iter = db.iterator(IteratorMode::Start);
+
+    for item in iter {
+        let (key, value) = item?;
+        let key_str = String::from_utf8_lossy(&key);
+
+        // Deserialize PersonRecord
+        let person_record: PersonRecord = match serde_json::from_slice(&value) {
+            Ok(record) => record,
+            Err(e) => {
+                log::warn!(
+                    "Failed to deserialize PersonRecord for key {}: {}",
+                    key_str,
+                    e
+                );
+                continue;
+            }
+        };
+
+        // Find the earliest commit timestamp (first commit globally)
+        if let Some(&earliest_timestamp) = person_record.commits.iter().map(|(_, ts, _)| ts).min() {
+            let account_age = now - earliest_timestamp;
+            match person_record.person_type {
+                env::PersonType::Author => author_ages.push(account_age),
+                env::PersonType::Committer => committer_ages.push(account_age),
+            }
+        }
+    }
+
+    author_ages.sort_unstable();
+    committer_ages.sort_unstable();
+
+    // Compute Q1 and Q2 for authors
+    let q1_q2_account_age_author = if author_ages.is_empty() {
+        (0.0, 0.0)
+    } else {
+        let n = author_ages.len();
+
+        // Q1 at 25th percentile
+        let q1_index = n / 4;
+        let q1 = if n % 4 == 0 && q1_index > 0 {
+            (author_ages[q1_index - 1] + author_ages[q1_index]) as f64 / 2.0
+        } else {
+            author_ages[q1_index] as f64
+        };
+
+        // Q2 at 50th percentile (median)
+        let q2 = if n % 2 == 0 {
+            (author_ages[n / 2 - 1] + author_ages[n / 2]) as f64 / 2.0
+        } else {
+            author_ages[n / 2] as f64
+        };
+
+        (q1, q2)
+    };
+
+    // Compute Q1 and Q2 for committers
+    let q1_q2_account_age_committer = if committer_ages.is_empty() {
+        (0.0, 0.0)
+    } else {
+        let n = committer_ages.len();
+
+        // Q1 at 25th percentile
+        let q1_index = n / 4;
+        let q1 = if n % 4 == 0 && q1_index > 0 {
+            (committer_ages[q1_index - 1] + committer_ages[q1_index]) as f64 / 2.0
+        } else {
+            committer_ages[q1_index] as f64
+        };
+
+        // Q2 at 50th percentile (median)
+        let q2 = if n % 2 == 0 {
+            (committer_ages[n / 2 - 1] + committer_ages[n / 2]) as f64 / 2.0
+        } else {
+            committer_ages[n / 2] as f64
+        };
+
+        (q1, q2)
+    };
+
+    log::info!(
+        "Global statistics computed: {} authors, {} committers",
+        author_ages.len(),
+        committer_ages.len()
+    );
+    log::info!(
+        "Author account age Q1={:.2} days, Q2={:.2} days",
+        q1_q2_account_age_author.0 / 86400.0,
+        q1_q2_account_age_author.1 / 86400.0
+    );
+    log::info!(
+        "Committer account age Q1={:.2} days, Q2={:.2} days",
+        q1_q2_account_age_committer.0 / 86400.0,
+        q1_q2_account_age_committer.1 / 86400.0
+    );
+
+    Ok(GlobalStatistics {
+        q1_q2_account_age_author,
+        q1_q2_account_age_committer,
+    })
 }
 
 /// Compute statistics from repository history (to be done only once)
@@ -296,7 +421,7 @@ fn compute_file_type_anomaly_score(
     if total_commits == 0.0 || commit_extensions.is_empty() {
         return 0.0;
     }
-    
+
     // Compute total interactions in this commit
     let commit_total_interactions: usize = commit_extensions.values().sum();
 
@@ -548,6 +673,38 @@ fn compute_newcomer_anomaly(person: &PersonRecord, q1: f64, q2: f64) -> f64 {
     (q2 - time_since_first) / range
 }
 
+/// Compute global account age anomaly score based on earliest commit across all repositories
+/// Returns higher score for accounts with recent creation dates (low account age)
+fn compute_account_age_anomaly(person: &PersonRecord, global_q1: f64, global_q2: f64) -> f64 {
+    let earliest_commit = person.commits.iter().map(|(_, ts, _)| ts).min();
+
+    let Some(&first_commit_ts) = earliest_commit else {
+        return 1.0; // No commits = suspicious/unknown
+    };
+
+    let now = env::get_now_timestamp();
+    let account_age = (now - first_commit_ts) as f64;
+
+    if account_age >= global_q2 {
+        // Established account (above median age)
+        return 0.0;
+    }
+
+    if account_age <= global_q1 {
+        // Very new account (below Q1)
+        return 1.0;
+    }
+
+    // Linear interpolation between Q1 and Q2
+    // Score decreases as account age increases
+    let range = global_q2 - global_q1;
+    if range == 0.0 {
+        return 0.0;
+    }
+
+    (global_q2 - account_age) / range
+}
+
 /// Compute repository dormancy score based on activity trend
 /// Compares commits in last 6 months vs 6-12 months ago
 /// Returns 0.0 for active/growing repositories, 1.0 for dormant repositories
@@ -606,6 +763,7 @@ pub fn compute_score<G: SwhFullGraph>(
     commit: usize,
     repo_stats: &RepositoryStats,
     repo_means: &RepoStatistics,
+    global_stats: Option<&GlobalStatistics>,
     graph: &G,
 ) -> Option<AnomalyScore> {
     // Create CommitInfo
@@ -749,6 +907,35 @@ pub fn compute_score<G: SwhFullGraph>(
         (0.0, 0.0)
     };
 
+    // Compute global account age anomalies if global statistics are provided
+    let account_age_author = if let Some(global_stats) = global_stats {
+        if let Some(author) = repo_stats.contributors.get(&author_id) {
+            compute_account_age_anomaly(
+                author,
+                global_stats.q1_q2_account_age_author.0,
+                global_stats.q1_q2_account_age_author.1,
+            )
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    let account_age_committer = if let Some(global_stats) = global_stats {
+        if let Some(committer) = repo_stats.contributors.get(&committer_id) {
+            compute_account_age_anomaly(
+                committer,
+                global_stats.q1_q2_account_age_committer.0,
+                global_stats.q1_q2_account_age_committer.1,
+            )
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
     let ownership_score = compute_anomaly_ownership(
         repo_stats,
         &author_id,
@@ -785,6 +972,8 @@ pub fn compute_score<G: SwhFullGraph>(
         number_commits_committer: committer_anomalies.0,
         newcomer_author: author_anomalies.2,
         newcomer_committer: committer_anomalies.1,
+        account_age_author,
+        account_age_committer,
         repository_dormancy,
         sensitive_file: if has_sensitive { 1.0 } else { 0.0 },
         prebuilt_file: if has_prebuilt { 1.0 } else { 0.0 },

@@ -1,5 +1,4 @@
-use anomalous_commits::env::RepositoryStats;
-use anomalous_commits::score::{AnomalyThresholds, compute_score};
+use anomalous_commits::env::{self, RepositoryStats};
 use anyhow::Result;
 use std::fs::File;
 use std::io::BufReader;
@@ -8,6 +7,7 @@ use swh_graph::graph::*;
 use swh_graph::mph::DynMphf;
 
 fn main() -> Result<()> {
+    let _url = "https://github.com/RIAEvangelist/node-ipc";
     let json_path = "repo_4959737356.json";
     let commit_swhids = vec![
         "swh:1:rev:847047cf7f81ab08352038b2204f0e7633449580",
@@ -22,14 +22,21 @@ fn main() -> Result<()> {
 
     // Display repository statistics
     println!("\n=== Repository Statistics ===");
-    println!("Total contributors: {}", repo_stats.contributors.len());
+    println!(
+        "Total contributors: {}",
+        repo_stats
+            .contributors
+            .values()
+            .filter(|contrib| contrib.person_type == env::PersonType::Author)
+            .count()
+    );
     println!(
         "Total commit times recorded: {}",
         repo_stats.commit_time.len()
     );
     println!(
         "Total file types: {}",
-        repo_stats.unique_file_type_interaction.len()
+        repo_stats.file_type_interaction.len()
     );
     println!(
         "Total files in filesystem: {}",
@@ -40,8 +47,6 @@ fn main() -> Result<()> {
         .load_all_properties::<DynMphf>()?
         .load_forward_labels()?
         .load_backward_labels()?;
-
-    let thresholds = AnomalyThresholds::default();
 
     println!("\n=== Computing Anomaly Scores ===");
     for swhid_str in commit_swhids {
@@ -62,38 +67,39 @@ fn main() -> Result<()> {
                 continue;
             }
         };
-
-        match compute_score(commit_node, &repo_stats, &thresholds, &graph) {
+        let repo_means = anomalous_commits::score::compute_repo_statistics(&repo_stats);
+        let global_stats = anomalous_commits::score::compute_global_account_age_statistics("db_path")?;
+        match anomalous_commits::score::compute_score(commit_node, &repo_stats, &repo_means, Some(&global_stats), &graph) {
             Some(score) => {
                 println!("Total Anomaly Score: {:.4}", score.total_score);
                 println!("\nComponent Scores:");
-                println!(
-                    "  Time-of-Day Score:          {:.4}",
-                    score.time_of_day_score
-                );
-                println!("  Diff Size Score:            {:.4}", score.diff_size_score);
-                println!(
-                    "  Contributor Experience:     {:.4}",
-                    score.contributor_experience_score
-                );
-                println!(
-                    "  File Type Diversity:        {:.4}",
-                    score.file_type_diversity_score
-                );
-                println!(
-                    "  Ownership Violation:        {:.4}",
-                    score.ownership_violation_score
-                );
+                // println!(
+                //     "  Time-of-Day Score:          {:.4}",
+                //     score.time_of_day_score
+                // );
+                // println!("  Diff Size Score:            {:.4}", score.diff_size_score);
+                // println!(
+                //     "  Contributor Experience:     {:.4}",
+                //     score.contributor_experience_score
+                // );
+                // println!(
+                //     "  File Type Diversity:        {:.4}",
+                //     score.file_type_diversity_score
+                // );
+                // println!(
+                //     "  Ownership Violation:        {:.4}",
+                //     score.ownership_violation_score
+                // );
 
-                println!("\nAnomaly Flags:");
-                println!("  Large Addition:             {}", score.is_large_addition);
-                println!("  Mass Deletion:              {}", score.is_mass_deletion);
-                println!(
-                    "  Mass Modification:          {}",
-                    score.is_mass_modification
-                );
-                println!("  New Contributor:            {}", score.is_new_contributor);
-                println!("  Self-Commit:                {}", score.is_self_commit);
+                // println!("\nAnomaly Flags:");
+                // println!("  Large Addition:             {}", score.is_large_addition);
+                // println!("  Mass Deletion:              {}", score.is_mass_deletion);
+                // println!(
+                //     "  Mass Modification:          {}",
+                //     score.is_mass_modification
+                // );
+                // println!("  New Contributor:            {}", score.is_new_contributor);
+                // println!("  Self-Commit:                {}", score.is_self_commit);
             }
             None => {
                 eprintln!("Could not compute score for this commit");
