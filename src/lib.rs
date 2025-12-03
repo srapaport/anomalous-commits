@@ -48,7 +48,9 @@ pub fn flush_to_rocksdb(
     opts.set_write_buffer_size(1024 * 1024 * 1024);
     let db = DB::open(&opts, db_path)?;
 
-    const MAX_RECORD_SIZE: usize = 100 * 1024 * 1024; // 100MB in bytes
+    // max size for teaser 328_447_742
+    const MAX_RECORD_SIZE: usize = 500 * 1024 * 1024; // 500MB in bytes
+    let mut max_size = (String::new(), 0);
     let mut skipped_authors = 0;
     let mut truncated_authors = 0;
 
@@ -63,30 +65,40 @@ pub fn flush_to_rocksdb(
             commits: author_info.commits,
             extensions: HashMap::new(),
         };
-        person_record.commits.sort_unstable_by_key(|commit|commit.1);
-        let mut value = serde_json::to_vec(&person_record).expect("Failed to serialize author info");
-
+        person_record
+            .commits
+            .sort_unstable_by_key(|commit| commit.1);
+        let mut value =
+            serde_json::to_vec(&person_record).expect("Failed to serialize author info");
+        let length = value.len();
+        if length > max_size.1 {
+            max_size.0 = author_id.clone();
+            max_size.1 = length;
+        }
         // Check if the value is too large
-        if value.len() > MAX_RECORD_SIZE {
+        if length > MAX_RECORD_SIZE {
             log::warn!(
                 "Author {} has {} commits, serialized size: {:.2} MB - truncating commits",
                 author_id,
                 person_record.commits.len(),
-                value.len() as f64 / (1024.0 * 1024.0)
+                length as f64 / (1024.0 * 1024.0)
             );
 
             // Truncate commits to first and last 1000
             if person_record.commits.len() > 2000 {
                 let mut truncated_commits = Vec::with_capacity(2000);
                 truncated_commits.extend_from_slice(&person_record.commits[..1000]);
-                truncated_commits.extend_from_slice(&person_record.commits[person_record.commits.len() - 2000..]);
+                truncated_commits.extend_from_slice(
+                    &person_record.commits[person_record.commits.len() - 2000..],
+                );
                 person_record.commits = truncated_commits;
             } else {
                 skipped_authors += 1;
                 continue;
             }
 
-            value = serde_json::to_vec(&person_record).expect("Failed to serialize truncated author info");
+            value = serde_json::to_vec(&person_record)
+                .expect("Failed to serialize truncated author info");
 
             // If STILL too large after truncation, skip this author
             if value.len() > MAX_RECORD_SIZE {
@@ -120,9 +132,16 @@ pub fn flush_to_rocksdb(
             commits: committer_info.commits,
             extensions: HashMap::new(),
         };
-        person_record.commits.sort_unstable_by_key(|commit|commit.1);
-        let mut value = serde_json::to_vec(&person_record).expect("Failed to serialize committer info");
-
+        person_record
+            .commits
+            .sort_unstable_by_key(|commit| commit.1);
+        let mut value =
+            serde_json::to_vec(&person_record).expect("Failed to serialize committer info");
+        let length = value.len();
+        if length > max_size.1 {
+            max_size.0 = committer_id.clone();
+            max_size.1 = length;
+        }
         // Check if the value is too large
         if value.len() > MAX_RECORD_SIZE {
             log::warn!(
@@ -136,14 +155,17 @@ pub fn flush_to_rocksdb(
             if person_record.commits.len() > 2000 {
                 let mut truncated_commits = Vec::with_capacity(2000);
                 truncated_commits.extend_from_slice(&person_record.commits[..1000]);
-                truncated_commits.extend_from_slice(&person_record.commits[person_record.commits.len() - 1000..]);
+                truncated_commits.extend_from_slice(
+                    &person_record.commits[person_record.commits.len() - 1000..],
+                );
                 person_record.commits = truncated_commits;
             } else {
                 skipped_committers += 1;
                 continue;
             }
 
-            value = serde_json::to_vec(&person_record).expect("Failed to serialize truncated committer info");
+            value = serde_json::to_vec(&person_record)
+                .expect("Failed to serialize truncated committer info");
 
             // If STILL too large after truncation, skip this committer
             if value.len() > MAX_RECORD_SIZE {
@@ -166,7 +188,11 @@ pub fn flush_to_rocksdb(
     db.flush()?;
 
     // Print summary
-    if truncated_authors > 0 || skipped_authors > 0 || truncated_committers > 0 || skipped_committers > 0 {
+    if truncated_authors > 0
+        || skipped_authors > 0
+        || truncated_committers > 0
+        || skipped_committers > 0
+    {
         println!("\n========== Flush Summary ==========");
         println!("  - Authors truncated:     {}", truncated_authors);
         println!("  - Authors skipped:       {}", skipped_authors);
@@ -174,7 +200,7 @@ pub fn flush_to_rocksdb(
         println!("  - Committers skipped:    {}", skipped_committers);
         println!("===================================\n");
     }
-
+    println!("max size saved: {} for {}", max_size.1, max_size.0);
     Ok(())
 }
 
@@ -492,16 +518,17 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
     // Open DB once and share it across threads
     let mut opts = Options::default();
     opts.create_if_missing(true);
-    opts.set_write_buffer_size(1024 * 1024 * 1024);
+    opts.set_write_buffer_size(2 * 1024 * 1024 * 1024);
     let db = Arc::new(Mutex::new(DB::open(&opts, db_path)?));
 
-    const MAX_RECORD_SIZE: usize = 100 * 1024 * 1024; // 100MB in bytes
+    // max for teaser 975_761_765
+    const MAX_RECORD_SIZE: usize = 1024 * 1024 * 1024; // 1GB in bytes
     let skipped_repos = AtomicUsize::new(0);
     let truncated_repos = AtomicUsize::new(0);
-    
+
     // CSV file to track skipped/truncated repos
     let csv_log = Arc::new(Mutex::new(
-        File::create("data/repo_processing_log.csv").expect("Failed to create CSV log file")
+        File::create("data/repo_processing_log.csv").expect("Failed to create CSV log file"),
     ));
     // Write CSV header
     writeln!(csv_log.lock().unwrap(), "url,skipped,truncated").expect("Failed to write CSV header");
@@ -515,6 +542,8 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
         .unwrap(),
     );
     bar.set_message("Retrieving Repositories Stats");
+
+    let max_size = (Arc::new(Mutex::new(String::new())), AtomicUsize::new(0));
 
     (0..graph.num_nodes())
         .into_par_iter()
@@ -542,16 +571,14 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
                 repo.commit_time.len(),
                 start.elapsed()
             );
-            // println!(
-            //     "{},{},{},{:?}",
-            //     &url_string,
-            //     repo.commit_time.len(),
-            //     repo.file_system.files.len(),
-            //     start.elapsed().as_secs_f64()
-            // );
             if !repo.commit_time.is_empty() {
                 // Defensive programming: check serialized size before writing
-                match repo.flush_to_rocksdb_async_safe_defensive(url_string.clone(), &db, MAX_RECORD_SIZE) {
+                match repo.flush_to_rocksdb_async_safe_defensive(
+                    url_string.clone(),
+                    &db,
+                    MAX_RECORD_SIZE,
+                    &max_size,
+                ) {
                     Ok((was_skipped, was_truncated)) => {
                         if was_skipped {
                             skipped_repos.fetch_add(1, Ordering::Relaxed);
@@ -560,8 +587,15 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
                             truncated_repos.fetch_add(1, Ordering::Relaxed);
                         }
                         // Log to CSV
-                        writeln!(csv_log.lock().unwrap(), "{},{},{}", url_string, was_skipped, was_truncated).ok();
-                    },
+                        writeln!(
+                            csv_log.lock().unwrap(),
+                            "{},{},{}",
+                            url_string,
+                            was_skipped,
+                            was_truncated
+                        )
+                        .ok();
+                    }
                     Err(e) => {
                         log::error!("Failed to write repo {} to RocksDB: {}", url_string, e);
                         skipped_repos.fetch_add(1, Ordering::Relaxed);
@@ -574,7 +608,7 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
         });
     print_error_stats();
     outliers::print_error_stats();
-    
+
     // Print repository flush summary
     let truncated = truncated_repos.load(Ordering::Relaxed);
     let skipped = skipped_repos.load(Ordering::Relaxed);
@@ -584,8 +618,13 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
         println!("  - Repositories skipped:   {}", skipped);
         println!("==============================================\n");
     }
-    
+
     // Explicitly flush at the end
+    println!(
+        "Max size of repo without errors: {} for {}",
+        max_size.1.load(Ordering::Relaxed),
+        *max_size.0.lock().unwrap()
+    );
     db.lock().unwrap().flush()?;
     Ok(())
 }

@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         .load_forward_labels()?
         .load_backward_labels()?;
 
-    let db_path = "data/RepositoryStats_full.db";
+    let db_path = "data/RepositoryStats_teaser.db";
     anomalous_commits::build_repo_stats(&graph, db_path)?;
     Ok(())
 }

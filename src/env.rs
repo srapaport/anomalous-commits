@@ -3,6 +3,7 @@ use chashmap::CHashMap;
 use rocksdb::{DB, Options};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub const SENSITIVE_FILE_EXTENSIONS: &[&str] = &[
@@ -178,17 +179,19 @@ impl RepositoryStats {
         &mut self,
         origin: String,
         db: &Arc<Mutex<DB>>,
+        max_size: &AtomicUsize,
     ) -> Result<()> {
         self.commit_time.sort_unstable();
         let value = serde_json::to_vec(&self)?;
 
+        max_size.fetch_max(value.len(), std::sync::atomic::Ordering::Relaxed);
         // Lock the DB for this write operation
         let db_lock = db.lock().unwrap();
         db_lock.put(origin.as_bytes(), value)?;
 
         Ok(())
     }
-    
+
     /// Flush to RocksDB with defensive programming for large values
     /// Returns (was_skipped, was_truncated)
     pub fn flush_to_rocksdb_async_safe_defensive(
@@ -196,25 +199,34 @@ impl RepositoryStats {
         origin: String,
         db: &Arc<Mutex<DB>>,
         max_record_size: usize,
+        max_size: &(Arc<Mutex<String>>, AtomicUsize),
     ) -> Result<(bool, bool)> {
         self.commit_time.sort_unstable();
         let mut value = serde_json::to_vec(&self)?;
         let mut was_truncated = false;
-
+        let length = value.len();
+        if length > max_size.1.load(std::sync::atomic::Ordering::Relaxed) {
+            max_size
+                .1
+                .fetch_max(length, std::sync::atomic::Ordering::Relaxed);
+            let mut max_url = max_size.0.lock().unwrap();
+            *max_url = origin.clone();
+        }
         // Check if the value is too large
-        if value.len() > max_record_size {
+        if length > max_record_size {
             log::warn!(
                 "Repo {} has {} commits, serialized size: {:.2} MB - truncating commit_time",
                 origin,
                 self.commit_time.len(),
-                value.len() as f64 / (1024.0 * 1024.0)
+                length as f64 / (1024.0 * 1024.0)
             );
 
             // Truncate commit_time to first and last 1000 entries
             if self.commit_time.len() > 2000 {
                 let mut truncated_times = Vec::with_capacity(2000);
                 truncated_times.extend_from_slice(&self.commit_time[..1000]);
-                truncated_times.extend_from_slice(&self.commit_time[self.commit_time.len() - 1000..]);
+                truncated_times
+                    .extend_from_slice(&self.commit_time[self.commit_time.len() - 1000..]);
                 self.commit_time = truncated_times;
             } else {
                 // Not enough data to truncate meaningfully, skip this repo
@@ -246,7 +258,7 @@ impl RepositoryStats {
 
         Ok((false, was_truncated)) // not skipped, maybe truncated
     }
-    
+
     pub fn flush_to_rocksdb(&mut self, origin: String, db_path: &str) -> Result<()> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
