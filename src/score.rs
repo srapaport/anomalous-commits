@@ -770,11 +770,11 @@ pub fn compute_score<G: SwhFullGraph>(
     let Some(author) = graph.properties().author_id(commit) else {
         return None;
     };
-    let author_id = format!("author:{:x}", author);
+    let author_id = format!("author:{:064x}", author);
     let Some(committer) = graph.properties().committer_id(commit) else {
         return None;
     };
-    let committer_id = format!("committer:{:x}", committer);
+    let committer_id = format!("committer:{:064x}", committer);
     let Some(cdate) = graph.properties().committer_timestamp(commit) else {
         return None;
     };

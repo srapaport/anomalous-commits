@@ -31,7 +31,7 @@ pub fn compute_diff<G: SwhFullGraph>(
     // Get author and timestamp for this commit
     let props = graph.properties();
     let author_id = if let Some(author) = props.author_id(commit) {
-        format!("author:{:x}", author)
+        format!("author:{:064x}", author)
     } else {
         AUTHOR_ID_FAILURES.fetch_add(1, Ordering::Relaxed);
         return;

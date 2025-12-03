@@ -147,8 +147,8 @@ pub fn update_contributors<G: SwhFullGraph>(
         return;
     };
 
-    let author_id = format!("author:{:x}", author);
-    let committer_id = format!("committer:{:x}", committer);
+    let author_id = format!("author:{:064x}", author);
+    let committer_id = format!("committer:{:064x}", committer);
     let self_committed = author == committer;
 
     let commit_id = props.swhid(commit).hash;

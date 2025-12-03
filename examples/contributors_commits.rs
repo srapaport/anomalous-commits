@@ -61,7 +61,7 @@ fn main() -> Result<()> {
                         }
                         NodeType::Revision => {
                             if let Some(author_hash) = graph.properties().author_id(succ) {
-                                let author_id = format!("author:{:x}", author_hash);
+                                let author_id = format!("author:{:064x}", author_hash);
                                 *count_commits
                                     .entry(ori)
                                     .or_insert_with(HashMap::new)
