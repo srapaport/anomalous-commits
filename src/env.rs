@@ -188,6 +188,65 @@ impl RepositoryStats {
 
         Ok(())
     }
+    
+    /// Flush to RocksDB with defensive programming for large values
+    /// Returns (was_skipped, was_truncated)
+    pub fn flush_to_rocksdb_async_safe_defensive(
+        &mut self,
+        origin: String,
+        db: &Arc<Mutex<DB>>,
+        max_record_size: usize,
+    ) -> Result<(bool, bool)> {
+        self.commit_time.sort_unstable();
+        let mut value = serde_json::to_vec(&self)?;
+        let mut was_truncated = false;
+
+        // Check if the value is too large
+        if value.len() > max_record_size {
+            log::warn!(
+                "Repo {} has {} commits, serialized size: {:.2} MB - truncating commit_time",
+                origin,
+                self.commit_time.len(),
+                value.len() as f64 / (1024.0 * 1024.0)
+            );
+
+            // Truncate commit_time to first and last 1000 entries
+            if self.commit_time.len() > 2000 {
+                let mut truncated_times = Vec::with_capacity(2000);
+                truncated_times.extend_from_slice(&self.commit_time[..1000]);
+                truncated_times.extend_from_slice(&self.commit_time[self.commit_time.len() - 1000..]);
+                self.commit_time = truncated_times;
+            } else {
+                // Not enough data to truncate meaningfully, skip this repo
+                log::error!(
+                    "Repo {} too large but has only {} commits - skipping",
+                    origin,
+                    self.commit_time.len()
+                );
+                return Ok((true, false)); // skipped, not truncated
+            }
+
+            value = serde_json::to_vec(&self)?;
+
+            // If STILL too large after truncation, skip this repo
+            if value.len() > max_record_size {
+                log::error!(
+                    "Repo {} still too large after truncation ({:.2} MB) - skipping",
+                    origin,
+                    value.len() as f64 / (1024.0 * 1024.0)
+                );
+                return Ok((true, false)); // skipped, not truncated
+            }
+            was_truncated = true;
+        }
+
+        // Lock the DB for this write operation
+        let db_lock = db.lock().unwrap();
+        db_lock.put(origin.as_bytes(), value)?;
+
+        Ok((false, was_truncated)) // not skipped, maybe truncated
+    }
+    
     pub fn flush_to_rocksdb(&mut self, origin: String, db_path: &str) -> Result<()> {
         let mut opts = Options::default();
         opts.create_if_missing(true);

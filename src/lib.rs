@@ -14,6 +14,7 @@ use rocksdb::{DB, Options};
 use std::{
     collections::HashMap,
     fs::File,
+    io::Write,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -491,7 +492,19 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
     // Open DB once and share it across threads
     let mut opts = Options::default();
     opts.create_if_missing(true);
+    opts.set_write_buffer_size(1024 * 1024 * 1024);
     let db = Arc::new(Mutex::new(DB::open(&opts, db_path)?));
+
+    const MAX_RECORD_SIZE: usize = 100 * 1024 * 1024; // 100MB in bytes
+    let skipped_repos = AtomicUsize::new(0);
+    let truncated_repos = AtomicUsize::new(0);
+    
+    // CSV file to track skipped/truncated repos
+    let csv_log = Arc::new(Mutex::new(
+        File::create("data/repo_processing_log.csv").expect("Failed to create CSV log file")
+    ));
+    // Write CSV header
+    writeln!(csv_log.lock().unwrap(), "url,skipped,truncated").expect("Failed to write CSV header");
 
     let amount_origins = *graph.num_nodes_by_type()?.get(&NodeType::Origin).unwrap();
     let bar = ProgressBar::new(amount_origins as u64);
@@ -529,21 +542,49 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
                 repo.commit_time.len(),
                 start.elapsed()
             );
-            println!(
-                "{},{},{},{:?}",
-                &url_string,
-                repo.commit_time.len(),
-                repo.file_system.files.len(),
-                start.elapsed().as_secs_f64()
-            );
+            // println!(
+            //     "{},{},{},{:?}",
+            //     &url_string,
+            //     repo.commit_time.len(),
+            //     repo.file_system.files.len(),
+            //     start.elapsed().as_secs_f64()
+            // );
             if !repo.commit_time.is_empty() {
-                repo.flush_to_rocksdb_async_safe(url_string, &db).unwrap();
+                // Defensive programming: check serialized size before writing
+                match repo.flush_to_rocksdb_async_safe_defensive(url_string.clone(), &db, MAX_RECORD_SIZE) {
+                    Ok((was_skipped, was_truncated)) => {
+                        if was_skipped {
+                            skipped_repos.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if was_truncated {
+                            truncated_repos.fetch_add(1, Ordering::Relaxed);
+                        }
+                        // Log to CSV
+                        writeln!(csv_log.lock().unwrap(), "{},{},{}", url_string, was_skipped, was_truncated).ok();
+                    },
+                    Err(e) => {
+                        log::error!("Failed to write repo {} to RocksDB: {}", url_string, e);
+                        skipped_repos.fetch_add(1, Ordering::Relaxed);
+                        writeln!(csv_log.lock().unwrap(), "{},true,false", url_string).ok();
+                    }
+                }
             } else {
                 EMPTY_REPO.fetch_add(1, Ordering::Relaxed);
             }
         });
     print_error_stats();
     outliers::print_error_stats();
+    
+    // Print repository flush summary
+    let truncated = truncated_repos.load(Ordering::Relaxed);
+    let skipped = skipped_repos.load(Ordering::Relaxed);
+    if truncated > 0 || skipped > 0 {
+        println!("\n========== Repository Flush Summary ==========");
+        println!("  - Repositories truncated: {}", truncated);
+        println!("  - Repositories skipped:   {}", skipped);
+        println!("==============================================\n");
+    }
+    
     // Explicitly flush at the end
     db.lock().unwrap().flush()?;
     Ok(())
