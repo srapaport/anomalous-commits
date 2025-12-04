@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rocksdb::{DB, IteratorMode, Options};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use swh_graph::NodeType;
 use swh_graph::graph::SwhFullGraph;
 
@@ -9,6 +10,35 @@ use crate::env::{
     self, BINARY_EXTENSIONS, PersonRecord, RepositoryStats, SENSITIVE_FILE_EXTENSIONS,
 };
 use crate::time_of_day::{Commit, TimeOfDayProfile};
+
+/// RocksDB error counters for score.rs module
+static ROCKSDB_CONNECTION_ERRORS: AtomicUsize = AtomicUsize::new(0);
+static ROCKSDB_QUERY_ERRORS: AtomicUsize = AtomicUsize::new(0);
+static ROCKSDB_DESERIALIZATION_ERRORS: AtomicUsize = AtomicUsize::new(0);
+
+/// Print RocksDB error statistics from score.rs
+pub fn print_rocksdb_errors() {
+    let conn = ROCKSDB_CONNECTION_ERRORS.load(Ordering::Relaxed);
+    let query = ROCKSDB_QUERY_ERRORS.load(Ordering::Relaxed);
+    let deser = ROCKSDB_DESERIALIZATION_ERRORS.load(Ordering::Relaxed);
+    let total = conn + query + deser;
+    
+    if total > 0 {
+        println!("\n========== RocksDB Errors (score.rs) ==========");
+        println!("  Connection errors:      {}", conn);
+        println!("  Query errors:           {}", query);
+        println!("  Deserialization errors: {}", deser);
+        println!("  Total:                  {}", total);
+        println!("===============================================\n");
+    }
+}
+
+/// Reset RocksDB error counters
+pub fn reset_rocksdb_errors() {
+    ROCKSDB_CONNECTION_ERRORS.store(0, Ordering::Relaxed);
+    ROCKSDB_QUERY_ERRORS.store(0, Ordering::Relaxed);
+    ROCKSDB_DESERIALIZATION_ERRORS.store(0, Ordering::Relaxed);
+}
 
 pub struct CommitInfo {
     pub timestamp: i64,
@@ -22,7 +52,9 @@ pub struct AnomalyScore {
     pub large_moves: f64,
     pub time_of_day: f64,
     pub author_tod: f64,
+    pub author_tod_global: f64,
     pub committer_tod: f64,
+    pub committer_tod_global: f64,
     pub file_type_interaction: f64,
     pub file_type_interaction_author: f64,
     pub number_commits_author: f64,
@@ -47,7 +79,9 @@ pub struct AnomalyWeights {
     pub large_moves: i32,
     pub time_of_day: i32,
     pub author_tod: i32,
+    pub author_tod_global: i32,
     pub committer_tod: i32,
+    pub committer_tod_global: i32,
     pub file_type_interaction: i32,
     pub file_type_interaction_author: i32,
     pub number_commits_author: i32,
@@ -71,7 +105,9 @@ impl Default for AnomalyWeights {
             large_moves: 1,
             time_of_day: 1,
             author_tod: 1,
+            author_tod_global: 1,
             committer_tod: 1,
+            committer_tod_global: 1,
             file_type_interaction: 1,
             file_type_interaction_author: 1,
             number_commits_author: 1,
@@ -97,7 +133,9 @@ impl AnomalyWeights {
             + self.large_moves
             + self.time_of_day
             + self.author_tod
+            + self.author_tod_global
             + self.committer_tod
+            + self.committer_tod_global
             + self.file_type_interaction
             + self.file_type_interaction_author
             + self.number_commits_author
@@ -126,7 +164,9 @@ pub fn compute_weighted_score(score: &AnomalyScore, weights: &AnomalyWeights) ->
     total += score.large_moves * weights.large_moves as f64;
     total += score.time_of_day * weights.time_of_day as f64;
     total += score.author_tod * weights.author_tod as f64;
+    total += score.author_tod_global * weights.author_tod_global as f64;
     total += score.committer_tod * weights.committer_tod as f64;
+    total += score.committer_tod_global * weights.committer_tod_global as f64;
     total += score.file_type_interaction * weights.file_type_interaction as f64;
     total += score.file_type_interaction_author * weights.file_type_interaction_author as f64;
     total += score.number_commits_author * weights.number_commits_author as f64;
@@ -244,7 +284,14 @@ pub struct GlobalStatistics {
 pub fn compute_global_account_age_statistics(db_path: &str) -> Result<GlobalStatistics> {
     let mut opts = Options::default();
     opts.create_if_missing(false);
-    let db = DB::open_for_read_only(&opts, db_path, false)?;
+    let db = match DB::open_for_read_only(&opts, db_path, false) {
+        Ok(db) => db,
+        Err(e) => {
+            ROCKSDB_CONNECTION_ERRORS.fetch_add(1, Ordering::Relaxed);
+            log::error!("Failed to open RocksDB at {}: {}", db_path, e);
+            return Err(e.into());
+        }
+    };
 
     let mut author_ages: Vec<i64> = Vec::new();
     let mut committer_ages: Vec<i64> = Vec::new();
@@ -255,13 +302,21 @@ pub fn compute_global_account_age_statistics(db_path: &str) -> Result<GlobalStat
     let iter = db.iterator(IteratorMode::Start);
 
     for item in iter {
-        let (key, value) = item?;
+        let (key, value) = match item {
+            Ok(kv) => kv,
+            Err(e) => {
+                ROCKSDB_QUERY_ERRORS.fetch_add(1, Ordering::Relaxed);
+                log::warn!("Error reading from RocksDB iterator: {}", e);
+                continue;
+            }
+        };
         let key_str = String::from_utf8_lossy(&key);
 
         // Deserialize PersonRecord
         let person_record: PersonRecord = match serde_json::from_slice(&value) {
             Ok(record) => record,
             Err(e) => {
+                ROCKSDB_DESERIALIZATION_ERRORS.fetch_add(1, Ordering::Relaxed);
                 log::warn!(
                     "Failed to deserialize PersonRecord for key {}: {}",
                     key_str,
@@ -886,6 +941,7 @@ pub fn compute_score<G: SwhFullGraph>(
     repo_stats: &RepositoryStats,
     repo_means: &RepoStatistics,
     global_stats: Option<&GlobalStatistics>,
+    db_persons_global: &str,
     graph: &G,
 ) -> Option<AnomalyScore> {
     // Create CommitInfo
@@ -1072,11 +1128,24 @@ pub fn compute_score<G: SwhFullGraph>(
     } else {
         0.0
     };
+    let author_tod_global = if let Some(author) = find_global_person(&author_id, db_persons_global)
+    {
+        compute_time_of_day_score_person(&commit_info, &author)
+    } else {
+        0.0
+    };
+
     let committer_tod = if let Some(committer) = repo_stats.contributors.get(&committer_id) {
         compute_time_of_day_score_person(&commit_info, committer)
     } else {
         0.0
     };
+    let committer_tod_global =
+        if let Some(committer) = find_global_person(&committer_id, db_persons_global) {
+            compute_time_of_day_score_person(&commit_info, &committer)
+        } else {
+            0.0
+        };
 
     let repository_dormancy = compute_repository_dormancy_score(repo_stats);
 
@@ -1087,7 +1156,9 @@ pub fn compute_score<G: SwhFullGraph>(
         large_moves,
         time_of_day: compute_time_of_day_score(&commit_info, repo_stats),
         author_tod,
+        author_tod_global,
         committer_tod,
+        committer_tod_global,
         file_type_interaction: file_type_anomaly_repo,
         file_type_interaction_author: author_anomalies.0,
         number_commits_author: author_anomalies.1,
@@ -1102,4 +1173,41 @@ pub fn compute_score<G: SwhFullGraph>(
         ownership_score,
         total_score: 0.0,
     })
+}
+
+fn find_global_person(person_id: &str, db_persons_global: &str) -> Option<PersonRecord> {
+    let mut opts = Options::default();
+    opts.create_if_missing(false);
+    let Ok(db) = DB::open_for_read_only(&opts, db_persons_global, false) else {
+        ROCKSDB_CONNECTION_ERRORS.fetch_add(1, Ordering::Relaxed);
+        log::warn!("failed to open database {}", db_persons_global);
+        return None;
+    };
+
+    let person_serde = match db.get(person_id) {
+        Ok(value) => {
+            if let Some(record) = value {
+                record
+            } else {
+                return None;
+            }
+        }
+        Err(e) => {
+            ROCKSDB_QUERY_ERRORS.fetch_add(1, Ordering::Relaxed);
+            log::warn!(
+                "Failed to query PersonRecord for key {}: {}",
+                person_id,
+                e
+            );
+            return None;
+        }
+    };
+    match serde_json::from_slice(&person_serde) {
+        Ok(record) => Some(record),
+        Err(e) => {
+            ROCKSDB_DESERIALIZATION_ERRORS.fetch_add(1, Ordering::Relaxed);
+            log::warn!("Failed to deserialize PersonRecord for key {}: {}", person_id, e);
+            None
+        }
+    }
 }
