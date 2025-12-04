@@ -26,7 +26,7 @@ fn main() -> Result<()> {
         .start()
         .unwrap();
 
-    let data_path = "data/persons_teaser.db";
+    let data_path = "data/persons_full.db";
     anomalous_commits::extract_author_commits_graph(&graph_basename, data_path)?;
     Ok(())
 }
