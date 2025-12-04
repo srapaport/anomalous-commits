@@ -21,6 +21,7 @@ plotters = { version = "0.3", optional = true }
 swh-graph = "8.0.11"
 num_cpus = "1.17.0"
 swh-graph-stdlib = "8.0.11"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
 
 [features]
 default = []
