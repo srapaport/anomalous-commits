@@ -2,6 +2,7 @@ use anomalous_commits::env::RepositoryStats;
 use anomalous_commits::score::AnomalyWeights;
 use anyhow::Result;
 use dotenvy::dotenv;
+use indicatif::{ProgressBar, ProgressStyle};
 use rocksdb::{DB, Options};
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -12,7 +13,9 @@ use swh_graph::{NodeType, graph::*};
 fn main() -> Result<()> {
     dotenv()?;
     let graph_basename = env::var("GRAPH_BASENAME").expect("GRAPH_BASENAME not set");
-    let origin_url = "";
+    // https://github.com/Avik-Jain/100-Days-Of-ML-Code | with: 185 commits 
+    let origin_url = "https://github.com/Avik-Jain/100-Days-Of-ML-Code";
+    let total_revisions = 185;
     let db_repo_stats_path = "data/RepositoryStats_teaser.db";
     let db_persons_path = "data/persons_teaser.db";
     let output_db_path = "data/anomaly_scores_test.db";
@@ -73,6 +76,15 @@ fn main() -> Result<()> {
     let swhid_url = swh_graph::SWHID::from_origin_url(origin_url);
     let node_url = graph.properties().node_id(swhid_url)?;
 
+    let pb = ProgressBar::new(total_revisions);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+            .expect("Failed to set progress bar template")
+            .progress_chars("#>-")
+    );
+    pb.set_message("Computing anomaly scores...");
+
     let mut visited = HashSet::new();
     let mut to_visit = vec![node_url];
 
@@ -94,10 +106,7 @@ fn main() -> Result<()> {
                         db_persons_path,
                         &graph,
                     ) {
-                        // Get commit SWHID for storage
                         let commit_swhid = graph.properties().swhid(succ).to_string();
-
-                        // Serialize ownership_score HashMap to JSON
                         let ownership_json = serde_json::to_string(&score.ownership_score.0)?;
 
                         // Insert into database
@@ -137,9 +146,9 @@ fn main() -> Result<()> {
                         )?;
 
                         insert_count += 1;
-                        if insert_count % 1000 == 0 {
-                            println!("Inserted {} commit scores...", insert_count);
-                        }
+                        pb.inc(1);
+                    } else {
+                        pb.inc(1);
                     }
                     to_visit.push(succ);
                 }
@@ -148,6 +157,7 @@ fn main() -> Result<()> {
         }
     }
 
-    println!("Completed! Total commits inserted: {}", insert_count);
+    pb.finish_with_message("Completed!");
+    println!("Total commits inserted: {}", insert_count);
     Ok(())
 }
