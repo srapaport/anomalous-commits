@@ -96,7 +96,9 @@ fn main() -> Result<()> {
         visited.insert(node);
         for succ in graph.successors(node) {
             match graph.properties().node_type(succ) {
-                NodeType::Snapshot | NodeType::Release => continue,
+                NodeType::Snapshot | NodeType::Release => {
+                    to_visit.push(succ);
+                },
                 NodeType::Revision => {
                     if let Some(score) = anomalous_commits::score::compute_score(
                         succ,
