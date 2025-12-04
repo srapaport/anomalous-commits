@@ -22,7 +22,7 @@ pub fn print_rocksdb_errors() {
     let query = ROCKSDB_QUERY_ERRORS.load(Ordering::Relaxed);
     let deser = ROCKSDB_DESERIALIZATION_ERRORS.load(Ordering::Relaxed);
     let total = conn + query + deser;
-    
+
     if total > 0 {
         println!("\n========== RocksDB Errors (score.rs) ==========");
         println!("  Connection errors:      {}", conn);
@@ -68,6 +68,51 @@ pub struct AnomalyScore {
     pub prebuilt_file: f64,
     pub ownership_score: (HashMap<String, f64>, bool),
     pub total_score: f64,
+}
+
+impl AnomalyScore {
+    /// Compute the total score as the mean of all anomaly scores
+    pub fn compute_total_score(&mut self) {
+        let mut sum = 0.0;
+        let mut count = 20;
+
+        sum += self.large_addition;
+        sum += self.large_deletion;
+        sum += self.large_modification;
+        sum += self.large_moves;
+        sum += self.time_of_day;
+        sum += self.author_tod;
+        sum += self.author_tod_global;
+        sum += self.committer_tod;
+        sum += self.committer_tod_global;
+        sum += self.file_type_interaction;
+        sum += self.file_type_interaction_author;
+        sum += self.number_commits_author;
+        sum += self.number_commits_committer;
+        sum += self.newcomer_author;
+        sum += self.newcomer_committer;
+        sum += self.account_age_author;
+        sum += self.account_age_committer;
+        sum += self.repository_dormancy;
+        sum += self.sensitive_file;
+        sum += self.prebuilt_file;
+
+        // For ownership_score, use the max anomaly score if flagged as anomalous
+        if self.ownership_score.1 {
+            if let Some(max_score) = self
+                .ownership_score
+                .0
+                .values()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+            {
+                sum += max_score;
+                count += 1;
+            }
+        }
+
+        // Compute mean
+        self.total_score = sum / count as f64;
+    }
 }
 
 /// Weights for each anomaly factor used in computing the final weighted score
@@ -1149,7 +1194,7 @@ pub fn compute_score<G: SwhFullGraph>(
 
     let repository_dormancy = compute_repository_dormancy_score(repo_stats);
 
-    Some(AnomalyScore {
+    let mut score = AnomalyScore {
         large_addition,
         large_deletion,
         large_modification,
@@ -1172,7 +1217,9 @@ pub fn compute_score<G: SwhFullGraph>(
         prebuilt_file: if has_prebuilt { 1.0 } else { 0.0 },
         ownership_score,
         total_score: 0.0,
-    })
+    };
+    score.compute_total_score();
+    Some(score)
 }
 
 fn find_global_person(person_id: &str, db_persons_global: &str) -> Option<PersonRecord> {
@@ -1194,11 +1241,7 @@ fn find_global_person(person_id: &str, db_persons_global: &str) -> Option<Person
         }
         Err(e) => {
             ROCKSDB_QUERY_ERRORS.fetch_add(1, Ordering::Relaxed);
-            log::warn!(
-                "Failed to query PersonRecord for key {}: {}",
-                person_id,
-                e
-            );
+            log::warn!("Failed to query PersonRecord for key {}: {}", person_id, e);
             return None;
         }
     };
@@ -1206,7 +1249,11 @@ fn find_global_person(person_id: &str, db_persons_global: &str) -> Option<Person
         Ok(record) => Some(record),
         Err(e) => {
             ROCKSDB_DESERIALIZATION_ERRORS.fetch_add(1, Ordering::Relaxed);
-            log::warn!("Failed to deserialize PersonRecord for key {}: {}", person_id, e);
+            log::warn!(
+                "Failed to deserialize PersonRecord for key {}: {}",
+                person_id,
+                e
+            );
             None
         }
     }
