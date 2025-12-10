@@ -1,10 +1,14 @@
 use crate::env::{FileInfo, RepositoryStats};
 use std::{
     collections::{HashMap, HashSet},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex},
 };
 use swh_graph::{NodeType, graph::SwhFullGraph, labels::EdgeLabel};
 use swh_graph_stdlib::diff::{TreeDiffOperation, tree_diff_dirs};
+
+// LRU cache for directory contents (optimization #1)
+static DIR_CACHE: once_cell::sync::Lazy<Mutex<lru::LruCache<usize, Arc<HashMap<String, usize>>>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(lru::LruCache::new(std::num::NonZeroUsize::new(5000).unwrap())));
 
 pub static ROOT_DIR_ERR: AtomicUsize = AtomicUsize::new(0);
 pub static NAME_UTF8_ERR: AtomicUsize = AtomicUsize::new(0);
@@ -46,18 +50,6 @@ pub fn compute_diff<G: SwhFullGraph>(
 
     let (stats, final_added, deleted_files, modified_files, renamed_files) =
         compute_diff_stats(commit_root_dir, &parent_root_dirs, graph);
-
-    // Initialize files from parent trees if not already present
-    // for (path, _) in parent_files {
-    //     repo.file_system.files.entry(path).or_insert_with(|| {
-    //         FileInfo {
-    //             creator: String::new(), // Will be set when file is added
-    //             interactions: HashMap::new(),
-    //             ownership_score: HashMap::new(),
-    //             commit_time: Vec::new(),
-    //         }
-    //     });
-    // }
 
     // Update FileSystem with the diff results
     update_file_system(
@@ -101,13 +93,13 @@ pub fn compute_diff_stats<G: SwhFullGraph>(
     HashMap<String, (String, usize)>,
     // HashMap<String, HashSet<usize>>,
 ) {
-    // Initialize aggregated diff results
-    let mut all_added: HashMap<String, usize> = HashMap::new();
+    // Initialize aggregated diff results with pre-allocation
+    let mut all_added: HashMap<String, usize> = HashMap::with_capacity(64);
 
     // Handle case with no parents (initial commit)
     if parent_root_dirs.is_empty() {
         // For initial commits, all files in the tree are added
-        all_added = collect_all_files_in_tree(commit_root_dir, graph);
+        all_added = collect_all_files_in_tree_cached(commit_root_dir, graph);
         return (
             DiffStats {
                 added: all_added.len(),
@@ -123,9 +115,10 @@ pub fn compute_diff_stats<G: SwhFullGraph>(
         );
     }
 
-    let mut all_deleted: HashMap<String, HashSet<usize>> = HashMap::new();
-    let mut all_modified: HashMap<String, usize> = HashMap::new(); // path -> new_file content
-    let mut all_renamed: HashMap<String, (String, usize)> = HashMap::new();
+    // Pre-allocate HashMaps
+    let mut all_deleted: HashMap<String, HashSet<usize>> = HashMap::with_capacity(32);
+    let mut all_modified: HashMap<String, usize> = HashMap::with_capacity(64); // path -> new_file content
+    let mut all_renamed: HashMap<String, (String, usize)> = HashMap::with_capacity(16);
     // let mut parent_files: HashMap<String, HashSet<usize>> = HashMap::new();
 
     // For merge handling: use hybrid approach with enum for zero-cost non-merge case
@@ -347,7 +340,98 @@ fn convert_path_to_string<G: SwhFullGraph>(
     result
 }
 
-/// Collect all files in a directory tree (used for initial commits)
+/// Cached version of collect_all_files_in_tree 
+fn collect_all_files_in_tree_cached<G: SwhFullGraph>(
+    root_dir: usize,
+    graph: &G,
+) -> HashMap<String, usize> {
+    // Check cache first
+    if let Ok(mut cache) = DIR_CACHE.lock() {
+        if let Some(cached) = cache.get(&root_dir) {
+            return (**cached).clone();
+        }
+    }
+    
+    let files = collect_all_files_in_tree_optimized(root_dir, graph);
+    
+    // Store in cache
+    if let Ok(mut cache) = DIR_CACHE.lock() {
+        cache.put(root_dir, Arc::new(files.clone()));
+    }
+    
+    files
+}
+
+/// Optimized version with pre-allocation and string buffer reuse
+fn collect_all_files_in_tree_optimized<G: SwhFullGraph>(
+    root_dir: usize,
+    graph: &G,
+) -> HashMap<String, usize> {
+    // Pre-allocate with reasonable capacity
+    let mut files = HashMap::with_capacity(256);
+    let mut path_node = HashMap::with_capacity(64);
+    let mut to_visit = Vec::with_capacity(64);
+    let mut visited = HashSet::with_capacity(256);
+    
+    path_node.insert(root_dir, String::from("."));
+    to_visit.push(root_dir);
+
+    while let Some(node) = to_visit.pop() {
+        if !visited.insert(node) {
+            continue; // Already visited
+        }
+
+        // Clone the path to avoid borrow checker issues
+        let current_path = path_node
+            .get(&node)
+            .expect("couldn't find path in path_node")
+            .clone();
+
+        for (succ, labels) in graph.labeled_successors(node) {
+            for label in labels {
+                let name = if let EdgeLabel::DirEntry(dir_entry) = label {
+                    if let Ok(name) =
+                        String::from_utf8(graph.properties().label_name(dir_entry.label_name_id()))
+                    {
+                        name
+                    } else {
+                        NAME_UTF8_ERR.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                } else {
+                    continue;
+                };
+
+                let path = if current_path == "." {
+                    name
+                } else {
+                    let mut p = String::with_capacity(current_path.len() + 1 + name.len());
+                    p.push_str(&current_path);
+                    p.push('/');
+                    p.push_str(&name);
+                    p
+                };
+
+                match graph.properties().node_type(succ) {
+                    NodeType::Content => {
+                        files.insert(path, succ);
+                    }
+                    NodeType::Directory => {
+                        path_node.insert(succ, path);
+                        if !visited.contains(&succ) {
+                            to_visit.push(succ);
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+        }
+    }
+    files
+}
+
+/// Original implementation (deprecated - kept for reference)
+#[allow(dead_code)]
 fn collect_all_files_in_tree<G: SwhFullGraph>(
     root_dir: usize,
     graph: &G,
