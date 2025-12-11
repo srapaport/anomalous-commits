@@ -510,7 +510,11 @@ pub fn extract_author_commits(dir_orc: String) {
     flush_to_rocksdb(all_authors, all_committers, "data/persons.db").unwrap();
 }
 
-pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Result<()> {
+pub fn build_repo_stats<G: SwhFullGraph + Sync>(
+    graph: &G,
+    db_path: &str,
+    list_repo: Option<&[&str]>,
+) -> Result<()> {
     if std::path::Path::new(db_path).exists() {
         DB::destroy(&Options::default(), db_path)?;
     }
@@ -558,7 +562,16 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(graph: &G, db_path: &str) -> Res
                 None
             })?;
             let latest_snapshot = outliers::retrieve_latest_snapshot(node, graph)?;
-            Some((url_string, latest_snapshot))
+            match list_repo {
+                Some(repos) => {
+                    if repos.contains(&url_string.as_str()) {
+                        Some((url_string, latest_snapshot))
+                    } else {
+                        None
+                    }
+                }
+                None => Some((url_string, latest_snapshot)),
+            }
         })
         .for_each(|(url_string, latest_snapshot)| {
             bar.inc(1);
