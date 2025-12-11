@@ -513,7 +513,7 @@ pub fn extract_author_commits(dir_orc: String) {
 pub fn build_repo_stats<G: SwhFullGraph + Sync>(
     graph: &G,
     db_path: &str,
-    list_repo: Option<&[&str]>,
+    list_repo: Option<&Vec<(&str, Vec<&str>)>>,
 ) -> Result<()> {
     if std::path::Path::new(db_path).exists() {
         DB::destroy(&Options::default(), db_path)?;
@@ -561,10 +561,14 @@ pub fn build_repo_stats<G: SwhFullGraph + Sync>(
                 URL_ERRORS_UTF8.fetch_add(1, Ordering::Relaxed);
                 None
             })?;
-            let latest_snapshot = outliers::retrieve_latest_snapshot(node, graph)?;
+            let mut latest_snapshot = outliers::retrieve_latest_snapshot(node, graph)?;
             match list_repo {
                 Some(repos) => {
-                    if repos.contains(&url_string.as_str()) {
+                    if repos.iter().any(|repo|repo.0 == url_string.as_str()){
+                        let url_swhid = swh_graph::SWHID::from_origin_url(&url_string);
+                        if let Ok(node) = graph.properties().node_id(url_swhid){
+                            latest_snapshot = node;
+                        }
                         Some((url_string, latest_snapshot))
                     } else {
                         None

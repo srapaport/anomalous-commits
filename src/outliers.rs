@@ -62,13 +62,28 @@ pub fn process_snapshot<G: SwhFullGraph>(snapshot: usize, graph: &G) -> env::Rep
     let props = graph.properties();
     let mut repo = env::RepositoryStats::new();
     let mut visited = HashSet::new();
-    for succ in graph.successors(snapshot) {
-        // We only look at commits, we skip releases
-        // We don't retrieve the information on branch name so far
-        if props.node_type(succ) != NodeType::Revision {
-            continue;
+    if props.node_type(snapshot) == NodeType::Origin {
+        for succ in graph.successors(snapshot) {
+            if props.node_type(succ) == NodeType::Snapshot {
+                for succ_succ in graph.successors(succ) {
+                    // We only look at commits, we skip releases
+                    // We don't retrieve the information on branch name so far
+                    if props.node_type(succ) != NodeType::Revision {
+                        continue;
+                    }
+                    process_revision(succ_succ, &mut repo, &mut visited, graph);
+                }
+            }
         }
-        process_revision(succ, &mut repo, &mut visited, graph);
+    } else {
+        for succ in graph.successors(snapshot) {
+            // We only look at commits, we skip releases
+            // We don't retrieve the information on branch name so far
+            if props.node_type(succ) != NodeType::Revision {
+                continue;
+            }
+            process_revision(succ, &mut repo, &mut visited, graph);
+        }
     }
     repo
 }
