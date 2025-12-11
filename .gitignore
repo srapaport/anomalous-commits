@@ -10,3 +10,5 @@ data
 log*
 *.txt
 RESEARCH_TODO.md
+*.db
+*.old

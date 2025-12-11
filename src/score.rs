@@ -1,7 +1,6 @@
 use anyhow::Result;
-use rocksdb::{DB, IteratorMode, Options};
+use rocksdb::{DB, IteratorMode};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use swh_graph::NodeType;
 use swh_graph::graph::SwhFullGraph;
 
@@ -10,35 +9,6 @@ use crate::env::{
     self, BINARY_EXTENSIONS, PersonRecord, RepositoryStats, SENSITIVE_FILE_EXTENSIONS,
 };
 use crate::time_of_day::{Commit, TimeOfDayProfile};
-
-/// RocksDB error counters for score.rs module
-static ROCKSDB_CONNECTION_ERRORS: AtomicUsize = AtomicUsize::new(0);
-static ROCKSDB_QUERY_ERRORS: AtomicUsize = AtomicUsize::new(0);
-static ROCKSDB_DESERIALIZATION_ERRORS: AtomicUsize = AtomicUsize::new(0);
-
-/// Print RocksDB error statistics from score.rs
-pub fn print_rocksdb_errors() {
-    let conn = ROCKSDB_CONNECTION_ERRORS.load(Ordering::Relaxed);
-    let query = ROCKSDB_QUERY_ERRORS.load(Ordering::Relaxed);
-    let deser = ROCKSDB_DESERIALIZATION_ERRORS.load(Ordering::Relaxed);
-    let total = conn + query + deser;
-
-    if total > 0 {
-        println!("\n========== RocksDB Errors (score.rs) ==========");
-        println!("  Connection errors:      {}", conn);
-        println!("  Query errors:           {}", query);
-        println!("  Deserialization errors: {}", deser);
-        println!("  Total:                  {}", total);
-        println!("===============================================\n");
-    }
-}
-
-/// Reset RocksDB error counters
-pub fn reset_rocksdb_errors() {
-    ROCKSDB_CONNECTION_ERRORS.store(0, Ordering::Relaxed);
-    ROCKSDB_QUERY_ERRORS.store(0, Ordering::Relaxed);
-    ROCKSDB_DESERIALIZATION_ERRORS.store(0, Ordering::Relaxed);
-}
 
 pub struct CommitInfo {
     pub timestamp: i64,
@@ -202,27 +172,48 @@ impl AnomalyWeights {
 /// sums them up, and normalizes by the sum of weights to keep scores comparable.
 pub fn compute_weighted_score(score: &AnomalyScore, weights: &AnomalyWeights) -> f64 {
     let mut total = 0.0;
+    let mut weight_sum = 0;
 
     total += score.large_addition * weights.large_addition as f64;
+    weight_sum += weights.large_addition;
     total += score.large_deletion * weights.large_deletion as f64;
+    weight_sum += weights.large_deletion;
     total += score.large_modification * weights.large_modification as f64;
+    weight_sum += weights.large_modification;
     total += score.large_moves * weights.large_moves as f64;
+    weight_sum += weights.large_moves;
     total += score.time_of_day * weights.time_of_day as f64;
+    weight_sum += weights.time_of_day;
     total += score.author_tod * weights.author_tod as f64;
+    weight_sum += weights.author_tod;
     total += score.author_tod_global * weights.author_tod_global as f64;
+    weight_sum += weights.author_tod_global;
     total += score.committer_tod * weights.committer_tod as f64;
+    weight_sum += weights.committer_tod;
     total += score.committer_tod_global * weights.committer_tod_global as f64;
+    weight_sum += weights.committer_tod_global;
     total += score.file_type_interaction * weights.file_type_interaction as f64;
+    weight_sum += weights.file_type_interaction;
     total += score.file_type_interaction_author * weights.file_type_interaction_author as f64;
+    weight_sum += weights.file_type_interaction_author;
     total += score.number_commits_author * weights.number_commits_author as f64;
+    weight_sum += weights.number_commits_author;
     total += score.number_commits_committer * weights.number_commits_committer as f64;
+    weight_sum += weights.number_commits_committer;
     total += score.newcomer_author * weights.newcomer_author as f64;
+    weight_sum += weights.newcomer_author;
     total += score.newcomer_committer * weights.newcomer_committer as f64;
+    weight_sum += weights.newcomer_committer;
     total += score.account_age_author * weights.account_age_author as f64;
+    weight_sum += weights.account_age_author;
     total += score.account_age_committer * weights.account_age_committer as f64;
+    weight_sum += weights.account_age_committer;
     total += score.repository_dormancy * weights.repository_dormancy as f64;
+    weight_sum += weights.repository_dormancy;
     total += score.sensitive_file * weights.sensitive_file as f64;
+    weight_sum += weights.sensitive_file;
     total += score.prebuilt_file * weights.prebuilt_file as f64;
+    weight_sum += weights.prebuilt_file;
 
     // For ownership_score, use the max anomaly score (the bool indicates if it's anomalous)
     if score.ownership_score.1 {
@@ -233,21 +224,20 @@ pub fn compute_weighted_score(score: &AnomalyScore, weights: &AnomalyWeights) ->
             .max_by(|a, b| a.partial_cmp(b).unwrap())
         {
             total += max_score * weights.ownership_score as f64;
+            weight_sum += weights.ownership_score;
         }
     }
 
     // Normalize by the sum of weights
-    let weight_sum = weights.sum() as f64;
-    if weight_sum > 0.0 {
-        total / weight_sum
+    if weight_sum > 0 {
+        total / weight_sum as f64
     } else {
         0.0
     }
 }
 
-/// Calculate time-of-day anomaly score based on repository commit patterns
-fn compute_time_of_day_score(commit_info: &CommitInfo, repo_stats: &RepositoryStats) -> f64 {
-    // Build time-of-day profile from all commits in the repository
+/// Build time-of-day profile for the entire repository (to be called once)
+pub fn build_repo_tod_profile(repo_stats: &RepositoryStats) -> Option<TimeOfDayProfile> {
     let commits: Vec<Commit> = repo_stats
         .contributors
         .values()
@@ -261,45 +251,98 @@ fn compute_time_of_day_score(commit_info: &CommitInfo, repo_stats: &RepositorySt
         .collect();
 
     if commits.is_empty() {
-        return 0.0;
+        return None;
     }
 
     let mut profile = TimeOfDayProfile::new();
     profile.learn(&commits);
+    Some(profile)
+}
 
-    // Create commit object for the current commit
+/// Build time-of-day profiles for all contributors (to be called once)
+pub fn build_person_tod_profiles(
+    repo_stats: &RepositoryStats,
+) -> HashMap<String, TimeOfDayProfile> {
+    let mut profiles = HashMap::new();
+
+    for (person_id, person) in &repo_stats.contributors {
+        let commits: Vec<Commit> = person
+            .commits
+            .iter()
+            .map(|commit| Commit {
+                id: commit.0.clone(),
+                timestamp: commit.1 * 1_000_000_000,
+                tz_offset: commit.2,
+            })
+            .collect();
+
+        if !commits.is_empty() {
+            let mut profile = TimeOfDayProfile::new();
+            profile.learn(&commits);
+            profiles.insert(person_id.clone(), profile);
+        }
+    }
+
+    profiles
+}
+
+/// Build time-of-day profiles for all persons in global database (to be called once)
+pub fn build_global_person_tod_profiles(db: &DB) -> HashMap<String, TimeOfDayProfile> {
+    let mut profiles = HashMap::new();
+    let iter = db.iterator(IteratorMode::Start);
+
+    for item in iter {
+        let Ok((key, value)) = item else {
+            continue;
+        };
+        let key_str = String::from_utf8_lossy(&key).to_string();
+
+        let Ok(person_record): Result<PersonRecord, _> = serde_json::from_slice(&value) else {
+            continue;
+        };
+
+        let commits: Vec<Commit> = person_record
+            .commits
+            .iter()
+            .map(|commit| Commit {
+                id: commit.0.clone(),
+                timestamp: commit.1 * 1_000_000_000,
+                tz_offset: commit.2,
+            })
+            .collect();
+
+        if !commits.is_empty() {
+            let mut profile = TimeOfDayProfile::new();
+            profile.learn(&commits);
+            profiles.insert(key_str, profile);
+        }
+    }
+
+    profiles
+}
+
+/// Calculate time-of-day anomaly score using pre-built profile
+fn compute_time_of_day_score_cached(commit_info: &CommitInfo, profile: &TimeOfDayProfile) -> f64 {
     let current_commit = Commit {
-        id: String::new(),                                // ID not needed for scoring
-        timestamp: commit_info.timestamp * 1_000_000_000, // Convert to nanoseconds
+        id: String::new(),
+        timestamp: commit_info.timestamp * 1_000_000_000,
         tz_offset: commit_info.tz_offset,
     };
     profile.get_anomaly_score(&current_commit)
 }
 
-/// Calculate time-of-day anomaly score based on repository commit patterns
-fn compute_time_of_day_score_person(commit_info: &CommitInfo, person: &PersonRecord) -> f64 {
-    // Build time-of-day profile from all commits in the repository
-    let commits: Vec<Commit> = person
-        .commits
-        .iter()
-        .map(|commit| Commit {
-            id: commit.0.clone(),
-            timestamp: commit.1 * 1_000_000_000,
-            tz_offset: commit.2,
-        })
-        .collect();
-
-    if commits.is_empty() {
+/// Calculate time-of-day anomaly score using person-specific pre-built profile
+fn compute_time_of_day_score_person_cached(
+    commit_info: &CommitInfo,
+    profile_opt: Option<&TimeOfDayProfile>,
+) -> f64 {
+    let Some(profile) = profile_opt else {
         return 0.0;
-    }
+    };
 
-    let mut profile = TimeOfDayProfile::new();
-    profile.learn(&commits);
-
-    // Create commit object for the current commit
     let current_commit = Commit {
-        id: String::new(),                                // ID not needed for scoring
-        timestamp: commit_info.timestamp * 1_000_000_000, // Convert to nanoseconds
+        id: String::new(),
+        timestamp: commit_info.timestamp * 1_000_000_000,
         tz_offset: commit_info.tz_offset,
     };
 
@@ -326,18 +369,7 @@ pub struct GlobalStatistics {
 
 /// Compute global account age statistics from a RocksDB database containing PersonRecords
 /// Returns Q1 and Q2 (25th and 50th percentiles) for both authors and committers
-pub fn compute_global_account_age_statistics(db_path: &str) -> Result<GlobalStatistics> {
-    let mut opts = Options::default();
-    opts.create_if_missing(false);
-    let db = match DB::open_for_read_only(&opts, db_path, false) {
-        Ok(db) => db,
-        Err(e) => {
-            ROCKSDB_CONNECTION_ERRORS.fetch_add(1, Ordering::Relaxed);
-            log::error!("Failed to open RocksDB at {}: {}", db_path, e);
-            return Err(e.into());
-        }
-    };
-
+pub fn compute_global_account_age_statistics(db: &DB) -> Result<GlobalStatistics> {
     let mut author_ages: Vec<i64> = Vec::new();
     let mut committer_ages: Vec<i64> = Vec::new();
 
@@ -350,7 +382,6 @@ pub fn compute_global_account_age_statistics(db_path: &str) -> Result<GlobalStat
         let (key, value) = match item {
             Ok(kv) => kv,
             Err(e) => {
-                ROCKSDB_QUERY_ERRORS.fetch_add(1, Ordering::Relaxed);
                 log::warn!("Error reading from RocksDB iterator: {}", e);
                 continue;
             }
@@ -361,7 +392,6 @@ pub fn compute_global_account_age_statistics(db_path: &str) -> Result<GlobalStat
         let person_record: PersonRecord = match serde_json::from_slice(&value) {
             Ok(record) => record,
             Err(e) => {
-                ROCKSDB_DESERIALIZATION_ERRORS.fetch_add(1, Ordering::Relaxed);
                 log::warn!(
                     "Failed to deserialize PersonRecord for key {}: {}",
                     key_str,
@@ -986,8 +1016,10 @@ pub fn compute_score<G: SwhFullGraph>(
     repo_stats: &RepositoryStats,
     repo_means: &RepoStatistics,
     global_stats: Option<&GlobalStatistics>,
-    db_persons_global: &str,
     graph: &G,
+    repo_tod_profile: Option<&TimeOfDayProfile>,
+    person_tod_profiles: &HashMap<String, TimeOfDayProfile>,
+    global_person_tod_profiles: Option<&HashMap<String, TimeOfDayProfile>>,
 ) -> Option<AnomalyScore> {
     // Create CommitInfo
     let Some(author) = graph.properties().author_id(commit) else {
@@ -1168,29 +1200,30 @@ pub fn compute_score<G: SwhFullGraph>(
         &renamed_files,
     );
 
-    let author_tod = if let Some(author) = repo_stats.contributors.get(&author_id) {
-        compute_time_of_day_score_person(&commit_info, author)
-    } else {
-        0.0
-    };
-    let author_tod_global = if let Some(author) = find_global_person(&author_id, db_persons_global)
-    {
-        compute_time_of_day_score_person(&commit_info, &author)
+    let author_tod =
+        compute_time_of_day_score_person_cached(&commit_info, person_tod_profiles.get(&author_id));
+    let author_tod_global = if let Some(global_person_tod_profiles) = global_person_tod_profiles {
+        compute_time_of_day_score_person_cached(
+            &commit_info,
+            global_person_tod_profiles.get(&author_id),
+        )
     } else {
         0.0
     };
 
-    let committer_tod = if let Some(committer) = repo_stats.contributors.get(&committer_id) {
-        compute_time_of_day_score_person(&commit_info, committer)
+    let committer_tod = compute_time_of_day_score_person_cached(
+        &commit_info,
+        person_tod_profiles.get(&committer_id),
+    );
+    let committer_tod_global = if let Some(global_person_tod_profiles) = global_person_tod_profiles
+    {
+        compute_time_of_day_score_person_cached(
+            &commit_info,
+            global_person_tod_profiles.get(&committer_id),
+        )
     } else {
         0.0
     };
-    let committer_tod_global =
-        if let Some(committer) = find_global_person(&committer_id, db_persons_global) {
-            compute_time_of_day_score_person(&commit_info, &committer)
-        } else {
-            0.0
-        };
 
     let repository_dormancy = compute_repository_dormancy_score(repo_stats);
 
@@ -1199,7 +1232,9 @@ pub fn compute_score<G: SwhFullGraph>(
         large_deletion,
         large_modification,
         large_moves,
-        time_of_day: compute_time_of_day_score(&commit_info, repo_stats),
+        time_of_day: repo_tod_profile
+            .map(|p| compute_time_of_day_score_cached(&commit_info, p))
+            .unwrap_or(0.0),
         author_tod,
         author_tod_global,
         committer_tod,
@@ -1220,41 +1255,4 @@ pub fn compute_score<G: SwhFullGraph>(
     };
     score.compute_total_score();
     Some(score)
-}
-
-fn find_global_person(person_id: &str, db_persons_global: &str) -> Option<PersonRecord> {
-    let mut opts = Options::default();
-    opts.create_if_missing(false);
-    let Ok(db) = DB::open_for_read_only(&opts, db_persons_global, false) else {
-        ROCKSDB_CONNECTION_ERRORS.fetch_add(1, Ordering::Relaxed);
-        log::warn!("failed to open database {}", db_persons_global);
-        return None;
-    };
-
-    let person_serde = match db.get(person_id) {
-        Ok(value) => {
-            if let Some(record) = value {
-                record
-            } else {
-                return None;
-            }
-        }
-        Err(e) => {
-            ROCKSDB_QUERY_ERRORS.fetch_add(1, Ordering::Relaxed);
-            log::warn!("Failed to query PersonRecord for key {}: {}", person_id, e);
-            return None;
-        }
-    };
-    match serde_json::from_slice(&person_serde) {
-        Ok(record) => Some(record),
-        Err(e) => {
-            ROCKSDB_DESERIALIZATION_ERRORS.fetch_add(1, Ordering::Relaxed);
-            log::warn!(
-                "Failed to deserialize PersonRecord for key {}: {}",
-                person_id,
-                e
-            );
-            None
-        }
-    }
 }
