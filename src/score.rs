@@ -4,6 +4,9 @@ use std::collections::{HashMap, HashSet};
 use swh_graph::NodeType;
 use swh_graph::graph::SwhFullGraph;
 
+const WEIGHT_MIN: f64 = -2.0;
+const WEIGHT_MAX: f64 = 2.0;
+
 use crate::diff::{DiffStats, compute_diff_stats, get_root_dir};
 use crate::env::{
     self, BINARY_EXTENSIONS, PersonRecord, RepositoryStats, SENSITIVE_FILE_EXTENSIONS,
@@ -86,62 +89,63 @@ impl AnomalyScore {
 }
 
 /// Weights for each anomaly factor used in computing the final weighted score
+/// Weights can be negative or positive floats
 #[derive(Debug, Clone)]
 pub struct AnomalyWeights {
-    pub large_addition: i32,
-    pub large_deletion: i32,
-    pub large_modification: i32,
-    pub large_moves: i32,
-    pub time_of_day: i32,
-    pub author_tod: i32,
-    pub author_tod_global: i32,
-    pub committer_tod: i32,
-    pub committer_tod_global: i32,
-    pub file_type_interaction: i32,
-    pub file_type_interaction_author: i32,
-    pub number_commits_author: i32,
-    pub number_commits_committer: i32,
-    pub newcomer_author: i32,
-    pub newcomer_committer: i32,
-    pub account_age_author: i32,
-    pub account_age_committer: i32,
-    pub repository_dormancy: i32,
-    pub sensitive_file: i32,
-    pub prebuilt_file: i32,
-    pub ownership_score: i32,
+    pub large_addition: f64,
+    pub large_deletion: f64,
+    pub large_modification: f64,
+    pub large_moves: f64,
+    pub time_of_day: f64,
+    pub author_tod: f64,
+    pub author_tod_global: f64,
+    pub committer_tod: f64,
+    pub committer_tod_global: f64,
+    pub file_type_interaction: f64,
+    pub file_type_interaction_author: f64,
+    pub number_commits_author: f64,
+    pub number_commits_committer: f64,
+    pub newcomer_author: f64,
+    pub newcomer_committer: f64,
+    pub account_age_author: f64,
+    pub account_age_committer: f64,
+    pub repository_dormancy: f64,
+    pub sensitive_file: f64,
+    pub prebuilt_file: f64,
+    pub ownership_score: f64,
 }
 
 impl Default for AnomalyWeights {
     fn default() -> Self {
         Self {
-            large_addition: 1,
-            large_deletion: 1,
-            large_modification: 1,
-            large_moves: 1,
-            time_of_day: 1,
-            author_tod: 1,
-            author_tod_global: 1,
-            committer_tod: 1,
-            committer_tod_global: 1,
-            file_type_interaction: 1,
-            file_type_interaction_author: 1,
-            number_commits_author: 1,
-            number_commits_committer: 1,
-            newcomer_author: 1,
-            newcomer_committer: 1,
-            account_age_author: 1,
-            account_age_committer: 1,
-            repository_dormancy: 1,
-            sensitive_file: 1,
-            prebuilt_file: 1,
-            ownership_score: 1,
+            large_addition: 1.0,
+            large_deletion: 1.0,
+            large_modification: 1.0,
+            large_moves: 1.0,
+            time_of_day: 1.0,
+            author_tod: 1.0,
+            author_tod_global: 1.0,
+            committer_tod: 1.0,
+            committer_tod_global: 1.0,
+            file_type_interaction: 1.0,
+            file_type_interaction_author: 1.0,
+            number_commits_author: 1.0,
+            number_commits_committer: 1.0,
+            newcomer_author: 1.0,
+            newcomer_committer: 1.0,
+            account_age_author: 1.0,
+            account_age_committer: 1.0,
+            repository_dormancy: 1.0,
+            sensitive_file: 1.0,
+            prebuilt_file: 1.0,
+            ownership_score: 1.0,
         }
     }
 }
 
 impl AnomalyWeights {
     /// Calculate the sum of all weights
-    pub fn sum(&self) -> i32 {
+    pub fn sum(&self) -> f64 {
         self.large_addition
             + self.large_deletion
             + self.large_modification
@@ -164,56 +168,82 @@ impl AnomalyWeights {
             + self.prebuilt_file
             + self.ownership_score
     }
+    pub fn clamp(&mut self) {
+        self.large_addition = self.large_addition.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.large_deletion = self.large_deletion.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.large_modification = self.large_modification.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.large_moves = self.large_moves.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.time_of_day = self.time_of_day.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.author_tod = self.author_tod.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.author_tod_global = self.author_tod_global.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.committer_tod = self.committer_tod.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.committer_tod_global = self.committer_tod_global.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.file_type_interaction = self.file_type_interaction.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.file_type_interaction_author = self
+            .file_type_interaction_author
+            .clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.number_commits_author = self.number_commits_author.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.number_commits_committer = self.number_commits_committer.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.newcomer_author = self.newcomer_author.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.newcomer_committer = self.newcomer_committer.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.account_age_author = self.account_age_author.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.account_age_committer = self.account_age_committer.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.repository_dormancy = self.repository_dormancy.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.sensitive_file = self.sensitive_file.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.prebuilt_file = self.prebuilt_file.clamp(WEIGHT_MIN, WEIGHT_MAX);
+        self.ownership_score = self.ownership_score.clamp(WEIGHT_MIN, WEIGHT_MAX);
+    }
 }
 
 /// Compute the final weighted anomaly score
 ///
 /// Takes an AnomalyScore and weights, multiplies each factor by its weight,
-/// sums them up, and normalizes by the sum of weights to keep scores comparable.
+/// sums them up, and normalizes by the sum of absolute weight values to keep scores comparable.
+/// Weights can be negative or positive.
 pub fn compute_weighted_score(score: &AnomalyScore, weights: &AnomalyWeights) -> f64 {
     let mut total = 0.0;
-    let mut weight_sum = 0;
+    let mut weight_sum = 0.0;
 
-    total += score.large_addition * weights.large_addition as f64;
-    weight_sum += weights.large_addition;
-    total += score.large_deletion * weights.large_deletion as f64;
-    weight_sum += weights.large_deletion;
-    total += score.large_modification * weights.large_modification as f64;
-    weight_sum += weights.large_modification;
-    total += score.large_moves * weights.large_moves as f64;
-    weight_sum += weights.large_moves;
-    total += score.time_of_day * weights.time_of_day as f64;
-    weight_sum += weights.time_of_day;
-    total += score.author_tod * weights.author_tod as f64;
-    weight_sum += weights.author_tod;
-    total += score.author_tod_global * weights.author_tod_global as f64;
-    weight_sum += weights.author_tod_global;
-    total += score.committer_tod * weights.committer_tod as f64;
-    weight_sum += weights.committer_tod;
-    total += score.committer_tod_global * weights.committer_tod_global as f64;
-    weight_sum += weights.committer_tod_global;
-    total += score.file_type_interaction * weights.file_type_interaction as f64;
-    weight_sum += weights.file_type_interaction;
-    total += score.file_type_interaction_author * weights.file_type_interaction_author as f64;
-    weight_sum += weights.file_type_interaction_author;
-    total += score.number_commits_author * weights.number_commits_author as f64;
-    weight_sum += weights.number_commits_author;
-    total += score.number_commits_committer * weights.number_commits_committer as f64;
-    weight_sum += weights.number_commits_committer;
-    total += score.newcomer_author * weights.newcomer_author as f64;
-    weight_sum += weights.newcomer_author;
-    total += score.newcomer_committer * weights.newcomer_committer as f64;
-    weight_sum += weights.newcomer_committer;
-    total += score.account_age_author * weights.account_age_author as f64;
-    weight_sum += weights.account_age_author;
-    total += score.account_age_committer * weights.account_age_committer as f64;
-    weight_sum += weights.account_age_committer;
-    total += score.repository_dormancy * weights.repository_dormancy as f64;
-    weight_sum += weights.repository_dormancy;
-    total += score.sensitive_file * weights.sensitive_file as f64;
-    weight_sum += weights.sensitive_file;
-    total += score.prebuilt_file * weights.prebuilt_file as f64;
-    weight_sum += weights.prebuilt_file;
+    total += score.large_addition * weights.large_addition;
+    weight_sum += weights.large_addition.abs();
+    total += score.large_deletion * weights.large_deletion;
+    weight_sum += weights.large_deletion.abs();
+    total += score.large_modification * weights.large_modification;
+    weight_sum += weights.large_modification.abs();
+    total += score.large_moves * weights.large_moves;
+    weight_sum += weights.large_moves.abs();
+    total += score.time_of_day * weights.time_of_day;
+    weight_sum += weights.time_of_day.abs();
+    total += score.author_tod * weights.author_tod;
+    weight_sum += weights.author_tod.abs();
+    total += score.author_tod_global * weights.author_tod_global;
+    weight_sum += weights.author_tod_global.abs();
+    total += score.committer_tod * weights.committer_tod;
+    weight_sum += weights.committer_tod.abs();
+    total += score.committer_tod_global * weights.committer_tod_global;
+    weight_sum += weights.committer_tod_global.abs();
+    total += score.file_type_interaction * weights.file_type_interaction;
+    weight_sum += weights.file_type_interaction.abs();
+    total += score.file_type_interaction_author * weights.file_type_interaction_author;
+    weight_sum += weights.file_type_interaction_author.abs();
+    total += score.number_commits_author * weights.number_commits_author;
+    weight_sum += weights.number_commits_author.abs();
+    total += score.number_commits_committer * weights.number_commits_committer;
+    weight_sum += weights.number_commits_committer.abs();
+    total += score.newcomer_author * weights.newcomer_author;
+    weight_sum += weights.newcomer_author.abs();
+    total += score.newcomer_committer * weights.newcomer_committer;
+    weight_sum += weights.newcomer_committer.abs();
+    total += score.account_age_author * weights.account_age_author;
+    weight_sum += weights.account_age_author.abs();
+    total += score.account_age_committer * weights.account_age_committer;
+    weight_sum += weights.account_age_committer.abs();
+    total += score.repository_dormancy * weights.repository_dormancy;
+    weight_sum += weights.repository_dormancy.abs();
+    total += score.sensitive_file * weights.sensitive_file;
+    weight_sum += weights.sensitive_file.abs();
+    total += score.prebuilt_file * weights.prebuilt_file;
+    weight_sum += weights.prebuilt_file.abs();
 
     // For ownership_score, use the max anomaly score (the bool indicates if it's anomalous)
     if score.ownership_score.1 {
@@ -223,14 +253,14 @@ pub fn compute_weighted_score(score: &AnomalyScore, weights: &AnomalyWeights) ->
             .values()
             .max_by(|a, b| a.partial_cmp(b).unwrap())
         {
-            total += max_score * weights.ownership_score as f64;
-            weight_sum += weights.ownership_score;
+            total += max_score * weights.ownership_score;
+            weight_sum += weights.ownership_score.abs();
         }
     }
 
-    // Normalize by the sum of weights
-    if weight_sum > 0 {
-        total / weight_sum as f64
+    // Normalize by the sum of absolute weight values
+    if weight_sum > 0.0 {
+        total / weight_sum
     } else {
         0.0
     }
