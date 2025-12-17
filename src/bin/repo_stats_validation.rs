@@ -60,7 +60,7 @@ fn main() -> Result<()> {
             "https://github.com/dominictarr/event-stream",
             vec!["swh:1:rev:e3163361fed01384c986b9b4c18feb1fc42b8285"],
         ),
-        ("https://github.com/Marak/colors.js", vec![]),
+        // ("https://github.com/Marak/colors.js", vec![]),
         // (
         //     "https://github.com/gentoo/systemd",
         //     vec!["swh:1:rev:50e3544d11046408b610b955591319b1df949311"],
