@@ -68,7 +68,7 @@ pub fn process_snapshot<G: SwhFullGraph>(snapshot: usize, graph: &G) -> env::Rep
                 for succ_succ in graph.successors(succ) {
                     // We only look at commits, we skip releases
                     // We don't retrieve the information on branch name so far
-                    if props.node_type(succ) != NodeType::Revision {
+                    if props.node_type(succ_succ) != NodeType::Revision {
                         continue;
                     }
                     process_revision(succ_succ, &mut repo, &mut visited, graph);
