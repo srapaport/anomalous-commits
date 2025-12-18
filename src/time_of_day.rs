@@ -28,7 +28,7 @@ impl Commit {
 }
 
 /// Time-Of-Day profile for detecting unusual commit times
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TimeOfDayProfile {
     commit_counts: [u32; 24], // Histogram for 24 hours (UTC)
     total_commits: u32,

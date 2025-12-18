@@ -17,8 +17,8 @@ fn main() -> Result<()> {
         .load_all_properties::<DynMphf>()?
         .load_forward_labels()?
         .load_backward_labels()?;
-    let db_repo_stats_path = "data/RepositoryStats_teaser.db";
-    let db_persons_path = "data/persons_teaser.db";
+    let db_repo_stats_path = "data/RepositoryStats_validation.db";
+    let db_persons_path = "data/persons_full.db";
     let mut opts = Options::default();
     opts.create_if_missing(false);
     let db_repo_stats = DB::open_for_read_only(&opts, db_repo_stats_path, false)?;
@@ -28,9 +28,16 @@ fn main() -> Result<()> {
         log::warn!("failed to open database {}", db_persons_path);
         return Err(anyhow!("failed to open persons database"));
     };
-    let global_stats = anomalous_commits::score::compute_global_account_age_statistics(&db_global)?;
-    let global_person_tod_profiles =
-        anomalous_commits::score::build_global_person_tod_profiles(&db_global);
+    println!("Building global account age stats (once)...");
+    let global_stats = anomalous_commits::score::compute_global_account_age_statistics(
+        &db_global,
+        "data/validation/global_account_age.json",
+    )?;
+    println!("Building global time-of-day profiles (once)...");
+    let global_person_tod_profiles = anomalous_commits::score::build_global_person_tod_profiles(
+        &db_global,
+        "data/validation/global_person_tod.json",
+    );
 
     let weights = AnomalyWeights::default();
 
@@ -39,7 +46,7 @@ fn main() -> Result<()> {
     //     swhid_url.to_string()
     // );
     // Create SQLite database and table
-    let conn = Connection::open("data/teaser_scores/anomaly_scores.db")?;
+    let conn = Connection::open("data/validation/anomaly_scores.db")?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS anomaly_scores (
                 commit_node INTEGER,
@@ -74,22 +81,28 @@ fn main() -> Result<()> {
         [],
     )?;
 
+    // let origins = vec![
+    //     ("https://github.com/Avik-Jain/100-Days-Of-ML-Code", 185),
+    //     ("https://github.com/xingshaocheng/architect-awesome", 424),
+    //     ("https://github.com/formulahendry/955.WLB", 150),
+    //     ("https://github.com/openai/CLIP", 188),
+    //     ("https://github.com/lllyasviel/ControlNet", 295),
+    //     ("https://github.com/lib-pku/libpku", 192),
+    //     (
+    //         "https://github.com/shengxinjing/programmer-job-blacklist",
+    //         285,
+    //     ),
+    //     ("https://github.com/satwikkansal/wtfpython", 866),
+    //     (
+    //         "https://github.com/fengdu78/Coursera-ML-AndrewNg-Notes",
+    //         524,
+    //     ),
+    // ];
     let origins = vec![
-        ("https://github.com/Avik-Jain/100-Days-Of-ML-Code", 185),
-        ("https://github.com/xingshaocheng/architect-awesome", 424),
-        ("https://github.com/formulahendry/955.WLB", 150),
-        ("https://github.com/openai/CLIP", 188),
-        ("https://github.com/lllyasviel/ControlNet", 295),
-        ("https://github.com/lib-pku/libpku", 192),
-        (
-            "https://github.com/shengxinjing/programmer-job-blacklist",
-            285,
-        ),
-        ("https://github.com/satwikkansal/wtfpython", 866),
-        (
-            "https://github.com/fengdu78/Coursera-ML-AndrewNg-Notes",
-            524,
-        ),
+        ("https://github.com/atom-minimap/minimap", 2782),
+        ("https://github.com/RIAEvangelist/node-ipc", 642),
+        ("https://github.com/dominictarr/event-stream", 379),
+        ("https://github.com/php/php-src", 288_757),
     ];
     for (origin_url, total_revisions) in origins {
         let repo_stats: RepositoryStats = serde_json::from_slice(

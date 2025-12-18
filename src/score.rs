@@ -1,4 +1,5 @@
 use anyhow::Result;
+use indicatif::{ProgressBar, ProgressStyle};
 use rocksdb::{DB, IteratorMode};
 use std::collections::{HashMap, HashSet};
 use swh_graph::NodeType;
@@ -317,11 +318,34 @@ pub fn build_person_tod_profiles(
 }
 
 /// Build time-of-day profiles for all persons in global database (to be called once)
-pub fn build_global_person_tod_profiles(db: &DB) -> HashMap<String, TimeOfDayProfile> {
+pub fn build_global_person_tod_profiles(
+    db: &DB,
+    output_path: &str,
+) -> HashMap<String, TimeOfDayProfile> {
     let mut profiles = HashMap::new();
+
+    // Get estimated number of keys for progress bar
+    let estimated_keys = db
+        .property_value("rocksdb.estimate-num-keys")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    // Create progress bar
+    let pb = ProgressBar::new(estimated_keys);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{msg} {wide_bar} {pos}/{len} {percent_precise}% {elapsed_precise} {eta}",
+        )
+        .unwrap(),
+    );
+    pb.set_message("Building global person ToD profiles");
+
     let iter = db.iterator(IteratorMode::Start);
 
     for item in iter {
+        pb.inc(1);
         let Ok((key, value)) = item else {
             continue;
         };
@@ -347,6 +371,13 @@ pub fn build_global_person_tod_profiles(db: &DB) -> HashMap<String, TimeOfDayPro
             profiles.insert(key_str, profile);
         }
     }
+
+    pb.finish_with_message("Global person ToD profiles built");
+
+    // Serialize and write to file
+    let json = serde_json::to_string_pretty(&profiles).unwrap();
+    std::fs::write(output_path, json).unwrap();
+    log::info!("Global person ToD profiles saved to {}", output_path);
 
     profiles
 }
@@ -391,7 +422,7 @@ pub struct RepoStatistics {
     q1_q2_time_since_first_commit_committer: (f64, f64),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct GlobalStatistics {
     pub q1_q2_account_age_author: (f64, f64),
     pub q1_q2_account_age_committer: (f64, f64),
@@ -399,16 +430,36 @@ pub struct GlobalStatistics {
 
 /// Compute global account age statistics from a RocksDB database containing PersonRecords
 /// Returns Q1 and Q2 (25th and 50th percentiles) for both authors and committers
-pub fn compute_global_account_age_statistics(db: &DB) -> Result<GlobalStatistics> {
+pub fn compute_global_account_age_statistics(
+    db: &DB,
+    output_path: &str,
+) -> Result<GlobalStatistics> {
     let mut author_ages: Vec<i64> = Vec::new();
     let mut committer_ages: Vec<i64> = Vec::new();
 
     let now = env::get_now_timestamp();
 
+    // Get estimated number of keys for progress bar
+    let estimated_keys = db
+        .property_value("rocksdb.estimate-num-keys")?
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    // Create progress bar
+    let pb = ProgressBar::new(estimated_keys);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{msg} {wide_bar} {pos}/{len} {percent_precise}% {elapsed_precise} {eta}",
+        )
+        .unwrap(),
+    );
+    pb.set_message("Computing global account age statistics");
+
     // Iterate through all entries in the database
     let iter = db.iterator(IteratorMode::Start);
 
     for item in iter {
+        pb.inc(1);
         let (key, value) = match item {
             Ok(kv) => kv,
             Err(e) => {
@@ -440,6 +491,8 @@ pub fn compute_global_account_age_statistics(db: &DB) -> Result<GlobalStatistics
             }
         }
     }
+
+    pb.finish_with_message("Global account age statistics computed");
 
     author_ages.sort_unstable();
     committer_ages.sort_unstable();
@@ -508,10 +561,17 @@ pub fn compute_global_account_age_statistics(db: &DB) -> Result<GlobalStatistics
         q1_q2_account_age_committer.1 / 86400.0
     );
 
-    Ok(GlobalStatistics {
+    let global_stats = GlobalStatistics {
         q1_q2_account_age_author,
         q1_q2_account_age_committer,
-    })
+    };
+
+    // Serialize and write to file
+    let json = serde_json::to_string_pretty(&global_stats)?;
+    std::fs::write(output_path, json)?;
+    log::info!("Global statistics saved to {}", output_path);
+
+    Ok(global_stats)
 }
 
 /// Compute statistics from repository history (to be done only once)
