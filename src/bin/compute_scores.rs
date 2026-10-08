@@ -104,6 +104,7 @@ fn main() -> Result<()> {
         ("https://github.com/dominictarr/event-stream", 379),
         ("https://github.com/php/php-src", 288_757),
     ];
+    
     for (origin_url, total_revisions) in origins {
         let repo_stats: RepositoryStats = serde_json::from_slice(
             &db_repo_stats
